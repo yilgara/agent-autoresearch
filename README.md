@@ -192,8 +192,6 @@ PRs welcome. Before opening one:
 3. New adapters: add tests against your own synthetic data; we don't
    require you to share your real eval pipeline
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
