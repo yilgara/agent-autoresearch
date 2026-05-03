@@ -96,28 +96,41 @@ flowchart TB
     SK --> S1
     CV --> S2
 
-    %% ── Phase B · Propose ────────────────────────────────────────────
-    subgraph PHB[" Phase B · Propose — 3 LLM calls per target "]
+    %% ── Phase B · Propose (2 LLM calls — produces the candidate edit)
+    subgraph PHB[" Phase B · Propose — 2 LLM calls per target "]
         direction LR
         S4["<b>Step 4 · LLM #1</b><br/>build_program<br/>strategy doc"]:::llm
-        S5["<b>Step 5 · LLM #2</b><br/>propose<br/>Edit / Create / Skip"]:::llm
-        S6["<b>Step 6 · LLM #3</b><br/>critic<br/><i>Validation Layer A</i>"]:::llm
-        S4 --> S5 --> S6
+        S5["<b>Step 5 · LLM #2</b><br/>propose<br/>Edit / Skip"]:::llm
+        S4 --> S5
     end
     S3 -- "one Target<br/>per top-N skill" --> S4
 
-    %% ── Phase C · Soft replay ────────────────────────────────────────
-    subgraph PHC[" Phase C · Soft replay — 2 LLM calls per session "]
-        direction LR
-        S7a["<b>Step 7a · LLM #4</b><br/>responder<br/>reply under new skill"]:::llm
-        S7b["<b>Step 7b · LLM #5</b><br/>judge<br/>old vs new"]:::llm
-        S7c["<b>Aggregate</b><br/>fix_target_score<br/>regression_score<br/><i>Validation Layer B</i>"]:::nollm
-        S7a --> S7b --> S7c
-    end
-    S5 -- "new SKILL.md<br/>feeds replay" --> S7a
+    %% ── Action gate after step 5 ─────────────────────────────────────
+    DEC{{"<b>action?</b>"}}:::decision
+    S5 --> DEC
 
-    %% ── Verdict + Output ─────────────────────────────────────────────
+    %% ── Phase C · Validate (critic + replay run in parallel) ─────────
+    subgraph PHC[" Phase C · Validate — critic + replay run in parallel (only when action = edit) "]
+        direction LR
+        S6["<b>Step 6 · LLM #3</b><br/>critic<br/>audits the diff<br/><i>Validation Layer A</i>"]:::llm
+        subgraph REPLAY["Soft replay (per session, 2 LLM calls each)"]
+            direction TB
+            S7a["<b>Step 7a · LLM #4</b><br/>responder<br/>reply under new skill"]:::llm
+            S7b["<b>Step 7b · LLM #5</b><br/>judge<br/>old vs new"]:::llm
+            S7c["<b>Aggregate</b><br/>fix_target_score<br/>regression_score<br/><i>Validation Layer B</i>"]:::nollm
+            S7a --> S7b --> S7c
+        end
+    end
+
+    %% Edit fans out into BOTH critic AND replay (parallel, independent)
+    DEC == "edit" ==> S6
+    DEC == "edit" ==> S7a
+
+    %% Skip bypasses both validation gates entirely
     V{{"<b>Step 8 · Verdict</b> &nbsp;&nbsp; <i>deterministic</i><br/>ACCEPT · HUMAN_REVIEW · REJECT · SKIP"}}:::verdict
+    DEC -. "skip<br/>(no diff to validate)" .-> V
+
+    %% Critic + Replay both feed verdict
     S6 -- "form check" --> V
     S7c -- "substance scores" --> V
 
@@ -129,13 +142,19 @@ flowchart TB
     classDef llm fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
     classDef io fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
     classDef verdict fill:#FFF9C4,stroke:#F9A825,stroke-width:3px,color:#F57F17,font-weight:bold
+    classDef decision fill:#F3E5F5,stroke:#8E24AA,stroke-width:2px,color:#4A148C
     style PHA fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
     style PHB fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
     style PHC fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
+    style REPLAY fill:#FFFFFF,stroke:#BDBDBD,stroke-dasharray:3 3
     linkStyle default stroke:#616161,stroke-width:1.5px
 ```
 
-> Color key — 🟢 green: pure Python (no LLM). 🟠 orange: LLM call. 🔵 blue: I/O. 🟡 yellow: deterministic verdict.
+> **Color key** — 🟢 green: pure Python (no LLM). 🟠 orange: LLM call. 🔵 blue: I/O. 🟡 yellow: deterministic verdict. 🟣 purple: action gate.
+>
+> **Reading the action gate.** After step 5, the proposer's `action` decides what runs next:
+> - `edit` (thick double-arrow) — fans out into **both** critic and replay, which run independently in parallel.
+> - `skip` (dotted arrow) — bypasses both validation gates and goes straight to the verdict (which becomes `SKIP`).
 
 ### Phase A · Parse + Combine (no LLM)
 
@@ -164,28 +183,44 @@ For each top-N target the user asked for, the library combines:
 into one self-contained `Target` bundle that downstream steps work
 with. This is the join step.
 
-### Phase B · Propose (3 LLM calls per target)
+### Phase B · Propose (2 LLM calls per target)
 
-#### Step 4 — `build_program` (Sonnet call #1)
+#### Step 4 — `build_program` (LLM call #1)
 
-**Input**: target + current SKILL.md + evidence (eng + UX, full)
+**Input**: target + current SKILL.md + evidence (full)
 **Output**: a `program.md` strategy document — which failure pattern
 to target, evidence cited inline, current skill state, proposed edit
 shape, and what NOT to change.
 
-Borrowed from [AutoResearchYC](https://github.com/FlorisFok/AutoResearchYC)
-where `program.md` is the agent's task brief. Auto-generated here
-from your evidence on a per-round basis.
-
-#### Step 5 — `propose` (Sonnet call #2)
+#### Step 5 — `propose` (LLM call #2)
 
 **Input**: current SKILL.md + program.md
-**Output**: an action — `edit`, `create`, or `skip` — plus the new
-SKILL.md content if not skipping. The prompt enforces minimum-edit
-discipline: don't rewrite unrelated sections, don't add generic
-best-practice padding, preserve structure and terminology.
+**Output**: an action — `edit` or `skip` — plus the new SKILL.md
+content if editing. The prompt enforces minimum-edit discipline:
+don't rewrite unrelated sections, don't add generic best-practice
+padding, preserve structure and terminology.
 
-#### Step 6 — `critic` (Sonnet call #3) — Validation Layer A
+**The action determines what runs next:**
+
+- `edit` → both validation gates in Phase C run in parallel (steps 6
+  and 7 — neither depends on the other)
+- `skip` → both gates are bypassed; the run goes straight to step 8
+  with verdict `SKIP`
+
+So step 5 is the branching point of the pipeline. A `skip` here is
+how the proposer says "the strategy looks sound but it doesn't
+translate to a clean edit on this skill" — or alternatively, the
+strategy itself recommended `## Recommendation: SKIP`. Either way:
+no diff exists, so there's nothing for the critic or replay to
+validate.
+
+### Phase C · Validate (parallel, only on `edit`)
+
+Two independent gates measure different things — form vs substance.
+They run in parallel because neither needs the other's output, and
+both feed step 8.
+
+#### Step 6 — `critic` (LLM call #3) — Validation Layer A
 
 **Input**: program.md + the diff produced by step 5
 **Output**: `APPROVE` or `REQUEST_CHANGES` with line-by-line concerns.
@@ -198,17 +233,15 @@ The propose-then-critic split exists for the same reason code review
 exists: the author is biased to approve their own work. Two model
 calls with different framing get you genuinely independent judgment.
 
-### Phase C · Validate (2 LLM calls × N sessions per target)
-
 #### Step 7 — Soft replay — Validation Layer B
 
 For each session in `target.fix_session_ids + regression_baseline_ids`:
 
-- **Responder** (Sonnet call #4) — receives the full session
+- **Responder** (LLM call #4) — receives the full session
   transcript with one focus turn marked, plus the new SKILL.md.
   Outputs the agent reply it would produce at the focus turn under
   the new skill.
-- **Judge** (Sonnet call #5) — receives the same transcript, the
+- **Judge** (LLM call #5) — receives the same transcript, the
   original agent reply at the focus turn, the responder's
   hypothetical new reply, and the program.md. Picks `new`, `old`, or
   `tie` with reasoning.
@@ -238,7 +271,6 @@ Five possible labels:
 | `HUMAN_REVIEW` | Critic = APPROVE, no hard rejects fired, scores between thresholds |
 | `REJECT` | Critic = REQUEST_CHANGES **OR** `fix_target_score < 50%` **OR** `regression_score < 90%` |
 | `SKIP` | Step 5 returned `skip` — proposer chose not to attempt an edit |
-| `NO_VALIDATION` | `--no-validate` flag was passed |
 
 Thresholds are defined in [`agent_autoresearch/verdict.py`](../agent_autoresearch/verdict.py)
 under `THRESHOLDS`. Conservative on purpose: burden of proof is on
@@ -386,7 +418,7 @@ Less commonly:
 
 ## Future work
 
-See [README's roadmap](../README.md#roadmap). The big-ticket items:
+The big-ticket items:
 
 - **Multi-strategy A/B testing** — run `v1` and `v2` on the same
   target, compare proposed edits side by side
