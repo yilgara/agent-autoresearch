@@ -100,7 +100,7 @@ flowchart TB
     subgraph PHB[" Phase B · Propose — 2 LLM calls per target "]
         direction LR
         S4["<b>Step 4 · LLM #1</b><br/>build_program<br/>strategy doc"]:::llm
-        S5["<b>Step 5 · LLM #2</b><br/>propose<br/>Edit / Skip"]:::llm
+        S5["<b>Step 5 · LLM #2</b><br/>propose<br/>Edit / Create / Skip"]:::llm
         S4 --> S5
     end
     S3 -- "one Target<br/>per top-N skill" --> S4
@@ -122,9 +122,9 @@ flowchart TB
         end
     end
 
-    %% Edit fans out into BOTH critic AND replay (parallel, independent)
-    DEC == "edit" ==> S6
-    DEC == "edit" ==> S7a
+    %% Edit/Create fans out into BOTH critic AND replay (parallel, independent)
+    DEC == "edit / create" ==> S6
+    DEC == "edit / create" ==> S7a
 
     %% Skip bypasses both validation gates entirely
     V{{"<b>Step 8 · Verdict</b> &nbsp;&nbsp; <i>deterministic</i><br/>ACCEPT · HUMAN_REVIEW · REJECT · SKIP"}}:::verdict
@@ -153,7 +153,7 @@ flowchart TB
 > **Color key** — 🟢 green: pure Python (no LLM). 🟠 orange: LLM call. 🔵 blue: I/O. 🟡 yellow: deterministic verdict. 🟣 purple: action gate.
 >
 > **Reading the action gate.** After step 5, the proposer's `action` decides what runs next:
-> - `edit` (thick double-arrow) — fans out into **both** critic and replay, which run independently in parallel.
+> - `edit` or `create` (thick double-arrow) — both produce a new SKILL.md, so they fan out into **both** critic and replay, which run independently in parallel.
 > - `skip` (dotted arrow) — bypasses both validation gates and goes straight to the verdict (which becomes `SKIP`).
 
 ### Phase A · Parse + Combine (no LLM)
@@ -195,30 +195,28 @@ shape, and what NOT to change.
 #### Step 5 — `propose` (LLM call #2)
 
 **Input**: current SKILL.md + program.md
-**Output**: an action — `edit` or `skip` — plus the new SKILL.md
-content if editing. The prompt enforces minimum-edit discipline:
-don't rewrite unrelated sections, don't add generic best-practice
-padding, preserve structure and terminology.
+**Output**: an action — `edit`, `create`, or `skip` — plus the new
+SKILL.md content if editing or creating. The prompt enforces
+minimum-edit discipline: don't rewrite unrelated sections, don't add
+generic best-practice padding, preserve structure and terminology.
+
+The three actions:
+- **`edit`** — modify the existing SKILL.md (the common case)
+- **`create`** — write a brand-new SKILL.md when the strategy implies
+  a skill that doesn't exist yet (rare; the eng ranking usually points
+  at existing skills)
+- **`skip`** — don't propose a change at all (strategy too weak, or
+  doesn't fit the existing skill cleanly)
 
 **The action determines what runs next:**
 
-- `edit` → both validation gates in Phase C run in parallel (steps 6
-  and 7 — neither depends on the other)
+- `edit` or `create` → both produce a new SKILL.md, so both
+  validation gates in Phase C run in parallel (steps 6 and 7 —
+  neither depends on the other)
 - `skip` → both gates are bypassed; the run goes straight to step 8
   with verdict `SKIP`
 
-So step 5 is the branching point of the pipeline. A `skip` here is
-how the proposer says "the strategy looks sound but it doesn't
-translate to a clean edit on this skill" — or alternatively, the
-strategy itself recommended `## Recommendation: SKIP`. Either way:
-no diff exists, so there's nothing for the critic or replay to
-validate.
-
-### Phase C · Validate (parallel, only on `edit`)
-
-Two independent gates measure different things — form vs substance.
-They run in parallel because neither needs the other's output, and
-both feed step 8.
+### Phase C · Validation (3 LLM calls)
 
 #### Step 6 — `critic` (LLM call #3) — Validation Layer A
 
