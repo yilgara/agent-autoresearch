@@ -39,8 +39,6 @@ shipped change goes through human eyes.
 
 ## Pipeline
 
-![Pipeline diagram](docs/pipeline.png)
-
 The 8 steps split across three phases:
 
 ```
