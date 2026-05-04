@@ -26,36 +26,8 @@ right shape; refinement comes after pluggability):
 
 ---
 
-## v0.2 — adapter pluggability + reference adapters
 
-The refactor that turns this from a project-specific tool into a
-library. **In progress.**
-
-**Ships:**
-- Stable public API: `Adapter`, `SkillIO`, `LLMProvider`, `Target`,
-  `Conversation`, `Evidence` — all the abstractions documented in the
-  current README
-- `FilesystemSkillIO` default with configurable path templates
-- `AnthropicLLMProvider` default
-- Two reference adapters: `synthetic` (no API key needed, for the
-  tutorial quickstart) and `skilleval` (the original use case)
-- `autoresearch run --adapter <name>` CLI with entry-point discovery
-- Architecture doc + adapter-writing guide
-- Synthetic-data dry-run that works on a fresh clone
-
-**Why this is v0.2 and not v0.1:** the v0.1 codebase is deeply tied to
-the skilleval format. Anyone else trying to use it would have to fork
-and edit the parser. v0.2 makes that an adapter, not a fork.
-
----
-
-## v0.3 — Rubric + single-mutation discipline
-
-Inspired by [Wyndo's "skill-improves-all-skills"][wyndo] write-up,
-which is itself a Karpathy-loop adaptation. Two changes that work
-together:
-
-[wyndo]: https://aimaker.substack.com/p/how-i-built-skill-improves-all-skills-karpathy-autoresearch-loop
+## v0.2 — Rubric + single-mutation discipline
 
 ### A. Strategy LLM auto-generates a rubric per target
 
@@ -82,7 +54,7 @@ visible in the output folder so a reviewer can sanity-check.
 ### B. Single mutation per round (decompose the strategy)
 
 Today's `propose` step makes one bundled edit even when `program.md`
-identifies multiple weaknesses. v0.3 splits the strategy into atomic
+identifies multiple weaknesses. v0.2 splits the strategy into atomic
 changes and proposes ONE at a time, validates it, and only then moves
 on to the next.
 
@@ -93,7 +65,7 @@ Loop becomes:
 4. Stop when list exhausted, budget hit, or N consecutive rejects
 
 **Why:** smaller diffs, cleaner attribution per axis, easier rollback,
-matches Wyndo's "isolate one variable per experiment" discipline.
+matches "isolate one variable per experiment" discipline.
 Cost goes up 3-5× per skill in exchange for better signal quality.
 
 ### C. Verdict logic uses both axes explicitly
@@ -105,27 +77,27 @@ ACCEPT iff
 ```
 
 Today this is implicit in our `regression_score ≥ 90%` AND
-`fix_target_score ≥ 70%` thresholds. v0.3 makes it the explicit
-two-axis structure Wyndo's article points at: tests must pass; rubric
+`fix_target_score ≥ 70%` thresholds. v0.2 makes it the explicit
+two-axis structure: tests must pass; rubric
 score must rise. Same idea, but now the rubric is per-target binary
 criteria instead of a single freeform judge call.
 
-### What this borrows from Wyndo, what we keep our own
+### What is added, what kept same
 
-| Borrowed | Kept |
+| Added | Kept |
 |---|---|
 | Two-axis evaluation (tests + rubric) | Production data as the test set, not synthetic test cases |
 | Binary criteria on each axis | Strategy LLM authors them; humans don't |
 | Single-mutation discipline | One round per day, not hundreds overnight |
 | Keep-iff-improves ratchet | LLM judge, not deterministic check (criteria narrow it down) |
 
-**What we don't borrow:** the hundreds-of-mutations-overnight pattern
+**What we don't add:** the hundreds-of-mutations-overnight pattern
 or the human-authored test cases. Both run counter to "low setup,
 production-driven, daily cadence" which is our core philosophy.
 
 ---
 
-## v0.4 — Multi-turn replay + cross-run memory
+## v0.3 — Multi-turn replay + cross-run memory
 
 **Ships:**
 - True multi-turn replay (responder generates the agent's reply for
@@ -135,14 +107,14 @@ production-driven, daily cadence" which is our core philosophy.
   a particular edit shape, don't propose the same shape today.
 - Library of "known-bad edit patterns" the proposer learns to avoid.
 
-**Why deferred to v0.4:** multi-turn replay is more expensive and
+**Why deferred to v0.3:** multi-turn replay is more expensive and
 complex; the focus-turn approach catches most failures at lower cost.
 Worth doing once we know which failure modes the focus-turn approach
 misses in practice.
 
 ---
 
-## v0.5 — Multi-LLM-provider support
+## v0.4 — Multi-LLM-provider support
 
 **Ships:**
 - OpenAI provider
@@ -161,13 +133,8 @@ providers before the API contract is stable creates churn for users.
 
 **Ships:**
 - Frozen public API for adapters (no breaking changes after this)
-- Comprehensive test suite (unit + integration with mocked LLMs)
 - Performance benchmarks
-- Migration guide from v0.x
 
-**Why now:** by v1.0 we should have a few real users with real
-adapters whose feedback has shaped the API. Releasing v1.0 before
-that is a guess.
 
 ---
 
@@ -175,9 +142,9 @@ that is a guess.
 
 These are interesting but not yet on the path:
 
-- **Hybrid Wyndo-loop on top of our pipeline.** Use v0.3's pipeline to
-  identify which skills are broken in production, then run Wyndo-style
-  hundreds-of-mutations on just those skills. Depth where it matters,
+- **Hybrid pipeline.** Use v0.2's pipeline to
+  identify which skills are broken in production, then run 
+  hundreds-of-mutations on just those skills. Depth where it matters, 
   breadth everywhere else.
 - **Auto-merge with safety guardrails.** If a verdict is ACCEPT and
   identical edits land 3 days in a row across N runs, optionally
