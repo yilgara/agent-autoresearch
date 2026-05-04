@@ -125,6 +125,126 @@ def cmd_adapters() -> None:
     console.print(table)
 
 
+# ── `autoresearch judge` ────────────────────────────────────────────────────
+
+@cli.command("judge")
+@click.option(
+    "--transcripts", "transcripts_dir", required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Folder of `.jsonl` / `.json` session files (filename stem = session_id).",
+)
+@click.option(
+    "--skills", "skills_dir", required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Folder of skills. Subfolder names (or `.md` filenames) become the "
+         "skill names the judge attributes failures to.",
+)
+@click.option(
+    "--out", "output_csv", default="results.csv", show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Where to write the labeled CSV. Created if missing; appended to "
+         "(deduplicated by session_id) if it already exists.",
+)
+@click.option(
+    "--force-rejudge", is_flag=True, default=False,
+    help="Re-judge sessions even if they're already in the output CSV.",
+)
+def cmd_judge(
+    transcripts_dir: Path,
+    skills_dir: Path,
+    output_csv: Path,
+    force_rejudge: bool,
+) -> None:
+    """LLM-judge raw transcripts → labeled CSV that `--adapter csv` consumes.
+
+    Use this when you have agent conversation logs but no eval pipeline
+    yet. The judge labels each session pass/fail and attributes
+    failures to one of your known skills. Output is the exact CSV
+    format `CSVAdapter` reads.
+    """
+    from agent_autoresearch.judging import judge_transcripts
+
+    console = Console()
+
+    # Pre-flight: API key required (judging always calls the LLM)
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        console.print(
+            "[red]ANTHROPIC_API_KEY is not set.[/red] "
+            "Judging requires an LLM call per session — export the key first."
+        )
+        sys.exit(2)
+
+    # Discover skills from the skills folder
+    skills = _discover_skill_names(skills_dir)
+    if not skills:
+        console.print(
+            f"[red]No skills found under {skills_dir}.[/red] "
+            "Expected per-skill folders (with SKILL.md inside) or `*.md` files."
+        )
+        sys.exit(2)
+
+    console.print(Panel.fit(
+        f"transcripts: [bold]{transcripts_dir}[/bold]  ·  "
+        f"skills: [bold]{len(skills)}[/bold] discovered  ·  "
+        f"out: [bold]{output_csv}[/bold]",
+        title="autoresearch judge",
+        border_style="cyan",
+    ))
+
+    def _on_progress(sid: str, current: int, total: int) -> None:
+        console.print(f"  [dim]({current}/{total})[/dim] judging [cyan]{sid}[/cyan]")
+
+    report = judge_transcripts(
+        transcripts_dir=transcripts_dir,
+        skills=skills,
+        output_csv=output_csv,
+        skip_existing=not force_rejudge,
+        on_progress=_on_progress,
+    )
+
+    # Summary table — split session-level and row-level, since one
+    # session can produce multiple rows when it exercises multiple skills.
+    table = Table(title="Judge results", show_header=False, box=None)
+    table.add_column(style="dim")
+    table.add_column(justify="right", style="bold")
+    table.add_row("Transcripts found",            str(report.n_transcripts))
+    table.add_row("Sessions newly judged",        str(report.n_judged))
+    table.add_row("Sessions skipped (cached)",    str(report.n_skipped_existing))
+    table.add_row("Sessions with no skill match", str(report.n_unrelated))
+    table.add_row("Errors", f"[yellow]{report.n_errors}[/yellow]"
+                            if report.n_errors else "0")
+    table.add_row("", "")
+    table.add_row("CSV rows written",  str(report.n_rows_written))
+    table.add_row("  → pass",          f"[green]{report.n_pass}[/green]")
+    table.add_row("  → fail",          f"[red]{report.n_fail}[/red]")
+    console.print(table)
+    console.print(
+        f"results CSV → [bold]{report.output_csv}[/bold]\n"
+        f"next: [cyan]autoresearch run --adapter csv[/cyan]"
+    )
+
+
+def _discover_skill_names(skills_dir: Path) -> list[str]:
+    """List skill names under `skills_dir`.
+
+    Two layouts supported:
+      1. `skills/<name>/SKILL.md` — Anthropic-style; skill name = folder name
+      2. `skills/<name>.md`       — flat; skill name = file stem
+
+    Hidden entries (`.` prefix) are skipped. Order is alphabetical for
+    a stable judge prompt across runs.
+    """
+    names: set[str] = set()
+    for entry in skills_dir.iterdir():
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir() and (entry / "SKILL.md").exists():
+            names.add(entry.name)
+        elif entry.is_file() and entry.suffix.lower() == ".md":
+            names.add(entry.stem)
+    return sorted(names)
+
+
 # ── `autoresearch run` ──────────────────────────────────────────────────────
 
 @cli.command("run")
