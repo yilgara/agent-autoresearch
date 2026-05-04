@@ -122,51 +122,44 @@ class FilesystemSkillIO(SkillIO):
         self,
         root: str | Path = "skills",
         path_template: str | None = None,
-        kebab_to_snake_fallback: bool = False,
     ):
         """
         Args:
             root: base directory for the skill files
             path_template: `str.format()` template with `{root}` +
                 `{name}` placeholders. Default: `{root}/{name}/SKILL.md`.
-            kebab_to_snake_fallback: if True and the kebab-case name
-                doesn't resolve, try snake_case before giving up.
-                Useful when your eval emits `find-restaurant` but
-                disk has `find_restaurant`. Default False.
+                Templates may also use `{category}` as a recursive
+                glob if your skills are nested under category folders.
+
+        Naming: the skill name is used verbatim as `{name}` in the
+        template. If your eval pipeline emits a different convention
+        than your disk uses (e.g. kebab vs snake), normalize in the
+        adapter's `load_targets()` — don't rely on the I/O layer to
+        guess.
         """
         self.root = Path(root)
         self.path_template = path_template or self.DEFAULT_TEMPLATE
-        self.kebab_to_snake_fallback = kebab_to_snake_fallback
 
     def _resolve_path(self, name: str) -> Path:
-        """Find the file for `name`. Tries kebab as-given, optionally
-        snake_case fallback. Returns the first existing path.
-
-        For templates that contain `{category}` (a recursive glob),
-        we walk the tree and match by filename rather than path
-        substitution.
+        """Find the file for `name`. Substitutes `{name}` (and
+        `{category}` as a glob, if used) in the template and returns
+        the first existing match.
         """
-        candidates = [name]
-        if self.kebab_to_snake_fallback:
-            candidates.append(name.replace("-", "_"))
-
-        for candidate in candidates:
-            if "{category}" in self.path_template:
-                # Glob-style resolution — search anywhere under root
-                glob_target = (
-                    self.path_template
-                    .replace("{root}", str(self.root))
-                    .replace("{category}", "*")
-                    .replace("{name}", candidate)
-                )
-                matches = list(Path(".").glob(glob_target))
-                if matches:
-                    return matches[0]
-            else:
-                # Direct template substitution
-                p = Path(self.path_template.format(root=self.root, name=candidate))
-                if p.exists():
-                    return p
+        if "{category}" in self.path_template:
+            # Glob-style resolution — search anywhere under root
+            glob_target = (
+                self.path_template
+                .replace("{root}", str(self.root))
+                .replace("{category}", "*")
+                .replace("{name}", name)
+            )
+            matches = list(Path(".").glob(glob_target))
+            if matches:
+                return matches[0]
+        else:
+            p = Path(self.path_template.format(root=self.root, name=name))
+            if p.exists():
+                return p
         raise FileNotFoundError(
             f"Skill {name!r} not found under {self.root} "
             f"with template {self.path_template!r}"
