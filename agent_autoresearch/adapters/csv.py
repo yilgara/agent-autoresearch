@@ -249,11 +249,15 @@ class CSVAdapter(Adapter):
                 turn_raw = (row.get("failure_turn") or "").strip()
                 if turn_raw:
                     try:
-                        details["turn"] = int(turn_raw)
+                        # `focus_turn` is the key the replay step's
+                        # `pick_focus_turn()` reads — without it, replay
+                        # defaults to the last turn instead of the turn
+                        # where this skill's failure actually happened.
+                        details["focus_turn"] = int(turn_raw)
                     except ValueError:
                         # Non-integer turn is a CSV typo — keep it as the raw
                         # string so the LLM still sees something useful.
-                        details["turn"] = turn_raw
+                        details["focus_turn"] = turn_raw
 
                 evidence.append(Evidence(category=category, details=details))
 
