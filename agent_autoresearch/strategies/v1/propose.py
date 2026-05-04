@@ -9,17 +9,21 @@ markdown (no JSON-escaping). Parser is forgiving: malformed output
 defaults to 'skip' with a diagnostic in `reasoning` so the human
 reviewer still gets visibility.
 
-See `agent_autoresearch/prompts/propose.md` for the prompt.
+This is strategy v1's implementation. See `prompts/propose.md` next
+to this file for the prompt template.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
+from agent_autoresearch._prompts import format_prompt
 from agent_autoresearch.core.llm import LLMProvider, default_llm_provider
-from agent_autoresearch.prompts._loader import format_prompt
-from agent_autoresearch.stages._common import extract_tag
+from agent_autoresearch.strategies.v1._common import extract_tag
+
+_PROMPT_PATH = Path(__file__).parent / "prompts" / "propose.md"
 
 
 # Token cap — may emit a full revised SKILL.md (up to ~20 KB)
@@ -63,7 +67,7 @@ def propose(
     llm = llm or default_llm_provider()
 
     system, user = format_prompt(
-        "propose",
+        _PROMPT_PATH,
         program_md=program_md,
         current_skill_md=current_skill_md,
     )

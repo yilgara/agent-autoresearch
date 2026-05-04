@@ -5,17 +5,21 @@ Reads the target's evidence + the current SKILL.md, calls the
 text. The orchestrator writes it to `outputs/<run>/<skill>/program.md`
 and feeds it to step 5 (`propose`).
 
-See `agent_autoresearch/prompts/program.md` for the prompt itself.
+This is strategy v1's implementation. See `prompts/program.md` next
+to this file for the prompt template.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
+from agent_autoresearch._prompts import format_prompt
 from agent_autoresearch.core.data import Evidence, Target
 from agent_autoresearch.core.llm import LLMProvider, default_llm_provider
-from agent_autoresearch.prompts._loader import format_prompt
-from agent_autoresearch.stages._common import strip_chatter
+from agent_autoresearch.strategies.v1._common import strip_chatter
+
+_PROMPT_PATH = Path(__file__).parent / "prompts" / "program.md"
 
 
 # Token cap — program.md is short (1-2 KB output)
@@ -108,7 +112,7 @@ def build_program(
     llm = llm or default_llm_provider()
 
     system, user = format_prompt(
-        "program",
+        _PROMPT_PATH,
         skill_name=target.skill_name,
         rank=target.rank,
         n_evidence=target.n_evidence,

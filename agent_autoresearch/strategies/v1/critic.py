@@ -10,17 +10,21 @@ Returns a `CriticResult` with a verdict (APPROVE / REQUEST_CHANGES),
 prose reasoning, and a list of specific concerns each anchored to a
 diff line.
 
-See `agent_autoresearch/prompts/critic.md` for the prompt.
+This is strategy v1's implementation. See `prompts/critic.md` next
+to this file for the prompt template.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
+from agent_autoresearch._prompts import format_prompt
 from agent_autoresearch.core.llm import LLMProvider, default_llm_provider
-from agent_autoresearch.prompts._loader import format_prompt
-from agent_autoresearch.stages._common import extract_tag
+from agent_autoresearch.strategies.v1._common import extract_tag
+
+_PROMPT_PATH = Path(__file__).parent / "prompts" / "critic.md"
 
 
 # Token cap — short verdict + concerns list
@@ -91,7 +95,7 @@ def critic(
     llm = llm or default_llm_provider()
 
     system, user = format_prompt(
-        "critic",
+        _PROMPT_PATH,
         program_md=program_md,
         diff_text=diff_text,
         v_old_md=v_old_md,
