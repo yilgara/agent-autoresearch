@@ -1,26 +1,22 @@
 """Strategy v1 — the original autoresearch loop.
 
-One file per LLM-driven stage; each function is independently
-callable for partial-pipeline runs (e.g. testing one prompt change
-in isolation).
+One file per stage; each function is independently callable for
+partial-pipeline runs (e.g. testing one prompt change in isolation).
 
-Stages currently implemented (more landing as Phase 3 + 4 of the
-public refactor port):
+Stages in this strategy version:
 
-  Stage     Step  Module       Function          Result
-  ────────  ────  ───────────  ────────────────  ──────────────
-  Program   4     program.py   build_program     ProgramResult
-  Propose   5     propose.py   propose           ProposeResult
-  Critic    6     critic.py    critic            CriticResult
+  Stage      Step  Module          Function         Result
+  ─────────  ────  ──────────────  ───────────────  ───────────────
+  Program    4     program.py      build_program    ProgramResult
+  Propose    5     propose.py      propose          ProposeResult
+  Critic     6     critic.py       critic           CriticResult
+  Responder  7a    responder.py    run_responder    ResponderResult
+  Judge      7b    judge.py        run_judge        JudgeResult
+  Replay     7     replay.py       soft_replay      ReplayResult
+  Verdict    8     verdict.py      compute_verdict  Verdict
 
-  (Pending)
-  Responder 7a    responder.py — soft replay LLM #4
-  Judge     7b    judge.py     — soft replay LLM #5
-  Replay    7     replay.py    — orchestrates 7a + 7b per session
-  Verdict   8     verdict.py   — deterministic combine
-
-Each prompt template lives in `prompts/` next to this code so v1
-is self-contained — copy the whole folder to fork as v2.
+Each prompt template lives in `prompts/` next to this code so v1 is
+self-contained — copy the whole folder to fork as v2.
 """
 
 from agent_autoresearch.strategies.v1.critic import (
@@ -28,6 +24,12 @@ from agent_autoresearch.strategies.v1.critic import (
     CriticResult,
     CriticVerdict,
     critic,
+)
+from agent_autoresearch.strategies.v1.judge import (
+    JUDGE_MAX_TOKENS,
+    JudgeResult,
+    JudgeWinner,
+    run_judge,
 )
 from agent_autoresearch.strategies.v1.program import (
     EVIDENCE_MAX_TOTAL,
@@ -42,6 +44,25 @@ from agent_autoresearch.strategies.v1.propose import (
     ProposeAction,
     ProposeResult,
     propose,
+)
+from agent_autoresearch.strategies.v1.replay import (
+    DEFAULT_BASELINE_SAMPLE,
+    DEFAULT_FIX_SAMPLE,
+    ReplayResult,
+    SessionReplay,
+    SessionRole,
+    soft_replay,
+)
+from agent_autoresearch.strategies.v1.responder import (
+    RESPONDER_MAX_TOKENS,
+    ResponderResult,
+    run_responder,
+)
+from agent_autoresearch.strategies.v1.verdict import (
+    THRESHOLDS,
+    Verdict,
+    VerdictLabel,
+    compute_verdict,
 )
 
 
@@ -63,4 +84,25 @@ __all__ = [
     "CriticResult",
     "CriticVerdict",
     "CRITIC_MAX_TOKENS",
+    # responder (step 7a)
+    "run_responder",
+    "ResponderResult",
+    "RESPONDER_MAX_TOKENS",
+    # judge (step 7b)
+    "run_judge",
+    "JudgeResult",
+    "JudgeWinner",
+    "JUDGE_MAX_TOKENS",
+    # replay orchestrator (step 7)
+    "soft_replay",
+    "ReplayResult",
+    "SessionReplay",
+    "SessionRole",
+    "DEFAULT_FIX_SAMPLE",
+    "DEFAULT_BASELINE_SAMPLE",
+    # verdict (step 8)
+    "compute_verdict",
+    "Verdict",
+    "VerdictLabel",
+    "THRESHOLDS",
 ]
