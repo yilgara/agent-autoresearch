@@ -28,7 +28,7 @@ You bring:
 
 The loop produces, per skill:
 1. A focused improvement strategy (`program.md`) — generated from your eval evidence
-2. A proposed `v_new.md` for the skill — an Edit, a Create, or an explicit Skip
+2. A proposed `v_new.md` for the skill — an Edit, or an explicit Skip
 3. A critic's audit of the diff (Validation Layer A)
 4. A soft-replay run against real failed sessions + passing baselines (Validation Layer B)
 5. A deterministic verdict: **ACCEPT** / **HUMAN_REVIEW** / **REJECT** / **SKIP**
@@ -49,7 +49,7 @@ Phase A · Parse + Combine    (no LLM)
 
 Phase B · Propose            (3 LLM calls per target)
     4. build_program — strategy doc per target
-    5. propose      — Edit / Create / Skip + new SKILL.md
+    5. propose      — Edit / Skip + new SKILL.md if editing
     6. critic       — audit the diff (Validation Layer A)
 
 Phase C · Validate           (2 LLM calls × N sessions per target)
