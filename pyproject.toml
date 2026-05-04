@@ -37,7 +37,8 @@ autoresearch = "agent_autoresearch.cli:cli"
 # [project.entry-points."agent_autoresearch.adapters"]
 # myeval = "myeval_adapter:MyEvalAdapter"
 [project.entry-points."agent_autoresearch.adapters"]
-csv = "agent_autoresearch.adapters.csv:CSVAdapter"
+csv         = "agent_autoresearch.adapters.csv:CSVAdapter"
+jsonl_judge = "agent_autoresearch.adapters.jsonl_judge:JSONLJudgeAdapter"
 
 [project.urls]
 Homepage = "https://github.com/yilgara/agent-autoresearch"

@@ -1,27 +1,21 @@
 """LLM-driven session judging — turn raw transcripts into a labeled CSV.
 
-This module is the "Tier 0" entry point for users who only have
-agent conversation logs and no eval pipeline yet. Point it at a
+This module is the engine behind `JSONLJudgeAdapter`. Point it at a
 folder of JSONL/JSON transcripts; it will:
 
   1. Load each session
   2. Ask an LLM to judge pass/fail + attribute failures to one of
-     your known skills
-  3. Write a `results.csv` in the schema the CSV adapter consumes
+     your known skills (one judgment per skill exercised)
+  3. Write a `results.csv` in the schema `CSVAdapter` consumes
 
-After this runs you have everything `CSVAdapter` needs:
+The CSV is the cache: re-running is cheap because `skip_existing=True`
+short-circuits sessions already in the file. The user can also open
+the CSV in a spreadsheet and fix labels the LLM got wrong before the
+pipeline runs propose+critic+replay against them.
 
-    autoresearch judge --transcripts ./logs --skills ./skills --out ./results.csv
-    autoresearch run --adapter csv --top-n 3
-
-Why a separate command (not an adapter): the labels are expensive
-to produce (one LLM call per session) and worth caching. The CSV
-becomes the cache; subsequent `autoresearch run` invocations are
-free. The user can also open the CSV in a spreadsheet and fix
-labels the LLM got wrong before running propose+critic+replay.
-
-This module exposes one function — `judge_transcripts()` — and a
-small report dataclass. The CLI subcommand is just a thin wrapper.
+Most users go through `JSONLJudgeAdapter` rather than calling this
+function directly. Reach for it from Python only when you need
+custom paths, a non-default LLM provider, or a progress callback.
 """
 
 from __future__ import annotations
