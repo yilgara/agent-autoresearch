@@ -37,8 +37,7 @@ autoresearch = "agent_autoresearch.cli:cli"
 # [project.entry-points."agent_autoresearch.adapters"]
 # myeval = "myeval_adapter:MyEvalAdapter"
 [project.entry-points."agent_autoresearch.adapters"]
-synthetic = "agent_autoresearch.adapters.synthetic:SyntheticAdapter"
-skilleval = "agent_autoresearch.adapters.skilleval:SkillevalAdapter"
+csv = "agent_autoresearch.adapters.csv:CSVAdapter"
 
 [project.urls]
 Homepage = "https://github.com/yilgara/agent-autoresearch"
