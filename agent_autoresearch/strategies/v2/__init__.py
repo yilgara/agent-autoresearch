@@ -19,6 +19,9 @@ Each prompt template lives in `prompts/` next to this code so v1 is
 self-contained — copy the whole folder to fork as v2.
 """
 
+
+STRATEGY_VERSION = "v2"
+
 from agent_autoresearch.strategies.v2.critic import (
     CRITIC_MAX_TOKENS,
     CriticResult,

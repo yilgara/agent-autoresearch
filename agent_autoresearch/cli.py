@@ -165,6 +165,13 @@ def cmd_adapters() -> None:
     ),
 )
 @click.option(
+    "--strategy", "strategy",
+    type=click.Choice(["v1", "v2", "v3"], case_sensitive=False),
+    default="v1", show_default=True,
+    help="Strategy version to run. v1 is the original loop, v2 adds "
+         "atomic-mutation propose, v3 adds rubric + binary checks.",
+)
+@click.option(
     "--dry-run", is_flag=True, default=False,
     help="Load adapter targets but make no LLM calls. Sanity-check your adapter.",
 )
@@ -176,6 +183,7 @@ def cmd_run(
     outputs_root: Path,
     skills_root: Path,
     skill_path_template: str | None,
+    strategy: str,
     dry_run: bool,
 ) -> None:
     """Run the autoresearch pipeline against the named adapter."""
@@ -213,6 +221,7 @@ def cmd_run(
     mode = "[yellow]dry-run[/yellow]" if dry_run else "[green]live[/green]"
     console.print(Panel.fit(
         f"adapter: [bold]{adapter_name}[/bold]  ·  "
+        f"strategy: [bold]{strategy}[/bold]  ·  "
         f"top-n: [bold]{top_n}[/bold]  ·  "
         f"mode: {mode}",
         title="autoresearch run",
@@ -244,6 +253,7 @@ def cmd_run(
             raise_on_error=False,
             on_stage=None if dry_run else _on_stage,
             on_target_done=None if dry_run else _on_target_done,
+            strategy=strategy,
         )
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Pipeline error:[/red] {type(exc).__name__}: {exc}")
