@@ -149,25 +149,21 @@ class TestOpenAIProvider:
 # ── default_llm_provider dispatch ───────────────────────────────────────────
 
 class TestDefaultLLMProvider:
-    def test_explicit_name_wins_over_env(self, monkeypatch):
-        # Avoid touching real keys; we just check class dispatch by setting
-        # the API key env var so construction succeeds.
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-xyz")
-        monkeypatch.setenv("AUTORESEARCH_LLM_PROVIDER", "openai")
-        # Explicit name should pick anthropic regardless of env
-        # (Anthropic's __init__ tries to import the SDK; we let it.)
-        provider = default_llm_provider("anthropic")
-        assert isinstance(provider, AnthropicLLMProvider)
-
-    def test_env_var_picks_provider(self, monkeypatch):
+    def test_no_arg_returns_anthropic(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
-        monkeypatch.setenv("AUTORESEARCH_LLM_PROVIDER", "anthropic")
         provider = default_llm_provider()
         assert isinstance(provider, AnthropicLLMProvider)
 
-    def test_default_is_anthropic_when_unset(self, monkeypatch):
-        monkeypatch.delenv("AUTORESEARCH_LLM_PROVIDER", raising=False)
+    def test_explicit_name_picks_provider(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+        provider = default_llm_provider("anthropic")
+        assert isinstance(provider, AnthropicLLMProvider)
+
+    def test_env_var_is_NOT_consulted(self, monkeypatch):
+        """Regression test: AUTORESEARCH_LLM_PROVIDER must not influence
+        which provider gets picked. CLI flag is the only override."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+        monkeypatch.setenv("AUTORESEARCH_LLM_PROVIDER", "openai")  # ignored
         provider = default_llm_provider()
         assert isinstance(provider, AnthropicLLMProvider)
 
@@ -183,9 +179,6 @@ class TestDefaultLLMProvider:
 
     def test_alias_gpt_resolves_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
-        # OpenAI's __init__ tries to import openai. If the package is installed
-        # it succeeds; if not, it raises ImportError which we'd see as
-        # RuntimeError. Skip the assertion if openai isn't installed.
         try:
             provider = default_llm_provider("gpt")
         except RuntimeError as exc:

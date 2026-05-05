@@ -174,11 +174,10 @@ def cmd_adapters() -> None:
 @click.option(
     "--llm-provider", "llm_provider",
     type=click.Choice(["anthropic", "openai"], case_sensitive=False),
-    default=None,
+    default="anthropic", show_default=True,
     help=(
-        "Which LLM provider to use. Defaults to the AUTORESEARCH_LLM_PROVIDER "
-        "env var, or 'anthropic' if unset. Each provider needs its own API "
-        "key (ANTHROPIC_API_KEY or OPENAI_API_KEY)."
+        "Which LLM provider to use. Each provider needs its own API key "
+        "(ANTHROPIC_API_KEY or OPENAI_API_KEY)."
     ),
 )
 @click.option(
@@ -194,7 +193,7 @@ def cmd_run(
     skills_root: Path,
     skill_path_template: str | None,
     strategy: str,
-    llm_provider: str | None,
+    llm_provider: str,
     dry_run: bool,
 ) -> None:
     """Run the autoresearch pipeline against the named adapter."""
@@ -219,16 +218,11 @@ def cmd_run(
         path_template=skill_path_template,
     )
 
-    # 3. Resolve which LLM provider we'll use + pre-flight its API key
-    resolved_provider = (
-        (llm_provider or os.environ.get("AUTORESEARCH_LLM_PROVIDER", "")).strip().lower()
-        or "anthropic"
-    )
+    # 3. Pre-flight the chosen provider's API key
+    resolved_provider = llm_provider.lower()
     required_env_key = {
         "anthropic": "ANTHROPIC_API_KEY",
-        "claude":    "ANTHROPIC_API_KEY",
         "openai":    "OPENAI_API_KEY",
-        "gpt":       "OPENAI_API_KEY",
     }.get(resolved_provider)
 
     if not dry_run and required_env_key and not os.environ.get(required_env_key, "").strip():

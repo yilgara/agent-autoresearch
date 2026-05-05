@@ -8,14 +8,13 @@ Two providers ship with the library:
   - `AnthropicLLMProvider`  (default — Sonnet 4.5)
   - `OpenAILLMProvider`     (opt-in — GPT-4o)
 
-Pick which one runs by:
-  1. setting `AUTORESEARCH_LLM_PROVIDER=openai` in the env, or
-  2. passing `--llm-provider openai` on the CLI, or
-  3. constructing the provider directly and passing `llm=` to
-     `run_pipeline()` from Python.
+Pick which one runs by either:
+  - passing `--llm-provider openai` on the CLI, or
+  - constructing the provider directly and passing `llm=` to
+    `run_pipeline()` from Python.
 
 To add a new provider (Bedrock, OpenRouter, etc.), subclass
-`LLMProvider` and register it in `default_llm_provider()`.
+`LLMProvider` and register it in `_PROVIDER_ALIASES`.
 """
 
 from __future__ import annotations
@@ -123,10 +122,8 @@ class OpenAILLMProvider(LLMProvider):
 
         pip install agent-autoresearch[openai]    # installs the openai SDK
 
-        # then either
-        export AUTORESEARCH_LLM_PROVIDER=openai
-        # or pass `--llm-provider openai` on the CLI
-        # or instantiate directly:
+        # then either pass --llm-provider openai on the CLI, or
+        # instantiate directly:
         from agent_autoresearch.core.llm import OpenAILLMProvider
         provider = OpenAILLMProvider(model="gpt-4o-mini")
 
@@ -210,20 +207,17 @@ _PROVIDER_ALIASES: dict[str, type[LLMProvider]] = {
 
 
 def default_llm_provider(name: str | None = None) -> LLMProvider:
-    """Build the default provider from name/env.
+    """Build a provider by name, defaulting to Anthropic.
 
-    Resolution order:
-      1. explicit `name` argument
-      2. `AUTORESEARCH_LLM_PROVIDER` env var
-      3. fall back to "anthropic"
+    Pass `name="openai"` (or `"anthropic"`) to pick a specific
+    provider. With no argument, returns Anthropic. The CLI's
+    `--llm-provider` flag is the user-facing way to override this;
+    no env var is consulted.
 
     Returns a freshly-constructed provider — repeated calls don't
     share the underlying SDK client.
     """
-    chosen = (
-        (name or os.environ.get("AUTORESEARCH_LLM_PROVIDER", "")).strip().lower()
-        or "anthropic"
-    )
+    chosen = (name or "").strip().lower() or "anthropic"
     cls = _PROVIDER_ALIASES.get(chosen)
     if cls is None:
         valid = sorted(set(_PROVIDER_ALIASES.keys()))
