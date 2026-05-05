@@ -37,6 +37,7 @@ autoresearch = "agent_autoresearch.cli:cli"
 # [project.entry-points."agent_autoresearch.adapters"]
 # myeval = "myeval_adapter:MyEvalAdapter"
 [project.entry-points."agent_autoresearch.adapters"]
+synthetic   = "agent_autoresearch.adapters.synthetic:SyntheticAdapter"
 csv         = "agent_autoresearch.adapters.csv:CSVAdapter"
 jsonl_judge = "agent_autoresearch.adapters.jsonl_judge:JSONLJudgeAdapter"
 
