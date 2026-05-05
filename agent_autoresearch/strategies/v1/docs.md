@@ -25,6 +25,10 @@ calls** ≈ $0.07 with Sonnet 4.5.
 
 ## Flow
 
+The diagram below shows the pipeline for **one skill** (one `Target`).
+The orchestrator (`run_pipeline → run_target × N`) iterates this once
+per top-N target — that outer loop isn't drawn here.
+
 ```mermaid
 flowchart TB
     %% ── Inputs ──

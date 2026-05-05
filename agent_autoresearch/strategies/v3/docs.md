@@ -27,6 +27,12 @@ from v2 / v1.
 
 ## Flow
 
+The diagram below shows the pipeline for **one skill** (one `Target`).
+The orchestrator (`run_pipeline → run_target × N`) iterates this once
+per top-N target — that outer loop isn't drawn here. The atomic-
+mutation propose loop (inherited from v2) is collapsed into a single
+node since this doc focuses on what's new in v3.
+
 ```mermaid
 flowchart TB
     %% ── Inputs ──

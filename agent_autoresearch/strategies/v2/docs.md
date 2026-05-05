@@ -26,6 +26,12 @@ are different.
 
 ## Flow
 
+The diagram below shows the pipeline for **one skill** (one `Target`).
+The "for each evidence" loop iterates over **that skill's** evidence
+list (`target.evidence`). The outer "for each top-N target" loop
+happens at the orchestrator level (`run_pipeline → run_target × N`)
+and isn't drawn here.
+
 ```mermaid
 flowchart TB
     %% ── Inputs ──
