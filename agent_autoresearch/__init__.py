@@ -26,6 +26,7 @@ from agent_autoresearch.core.llm import (
     AnthropicLLMProvider,
     LLMProvider,
     LLMResponse,
+    OpenAILLMProvider,
 )
 from agent_autoresearch.core.skill_io import (
     FilesystemSkillIO,
@@ -52,6 +53,7 @@ __all__ = [
     # LLM
     "LLMProvider",
     "AnthropicLLMProvider",
+    "OpenAILLMProvider",
     "LLMResponse",
     # version
     "__version__",

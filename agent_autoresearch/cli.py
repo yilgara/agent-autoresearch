@@ -172,6 +172,16 @@ def cmd_adapters() -> None:
          "atomic-mutation propose, v3 adds rubric + binary checks.",
 )
 @click.option(
+    "--llm-provider", "llm_provider",
+    type=click.Choice(["anthropic", "openai"], case_sensitive=False),
+    default=None,
+    help=(
+        "Which LLM provider to use. Defaults to the AUTORESEARCH_LLM_PROVIDER "
+        "env var, or 'anthropic' if unset. Each provider needs its own API "
+        "key (ANTHROPIC_API_KEY or OPENAI_API_KEY)."
+    ),
+)
+@click.option(
     "--dry-run", is_flag=True, default=False,
     help="Load adapter targets but make no LLM calls. Sanity-check your adapter.",
 )
@@ -184,6 +194,7 @@ def cmd_run(
     skills_root: Path,
     skill_path_template: str | None,
     strategy: str,
+    llm_provider: str | None,
     dry_run: bool,
 ) -> None:
     """Run the autoresearch pipeline against the named adapter."""
@@ -208,20 +219,47 @@ def cmd_run(
         path_template=skill_path_template,
     )
 
-    # 3. Pre-flight check for ANTHROPIC_API_KEY in live mode
-    if not dry_run and not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+    # 3. Resolve which LLM provider we'll use + pre-flight its API key
+    resolved_provider = (
+        (llm_provider or os.environ.get("AUTORESEARCH_LLM_PROVIDER", "")).strip().lower()
+        or "anthropic"
+    )
+    required_env_key = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "claude":    "ANTHROPIC_API_KEY",
+        "openai":    "OPENAI_API_KEY",
+        "gpt":       "OPENAI_API_KEY",
+    }.get(resolved_provider)
+
+    if not dry_run and required_env_key and not os.environ.get(required_env_key, "").strip():
         console.print(
-            "[red]ANTHROPIC_API_KEY is not set.[/red] "
-            "Either export it, or re-run with [bold]--dry-run[/bold] to "
-            "exercise just the adapter loading without making LLM calls."
+            f"[red]{required_env_key} is not set.[/red] "
+            f"The {resolved_provider!r} provider requires it. "
+            "Either export it, switch providers with [bold]--llm-provider[/bold], "
+            "or re-run with [bold]--dry-run[/bold] to skip live calls."
         )
         sys.exit(2)
+
+    # Construct the provider explicitly so we can pass it down (rather
+    # than letting `default_llm_provider()` pick from env at every call site).
+    llm_instance = None
+    if not dry_run:
+        try:
+            from agent_autoresearch.core.llm import default_llm_provider
+            llm_instance = default_llm_provider(resolved_provider)
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Failed to initialize LLM provider {resolved_provider!r}:[/red] "
+                f"{type(exc).__name__}: {exc}"
+            )
+            sys.exit(2)
 
     # 4. Header panel
     mode = "[yellow]dry-run[/yellow]" if dry_run else "[green]live[/green]"
     console.print(Panel.fit(
         f"adapter: [bold]{adapter_name}[/bold]  ·  "
         f"strategy: [bold]{strategy}[/bold]  ·  "
+        f"llm: [bold]{resolved_provider}[/bold]  ·  "
         f"top-n: [bold]{top_n}[/bold]  ·  "
         f"mode: {mode}",
         title="autoresearch run",
@@ -244,6 +282,7 @@ def cmd_run(
         result = run_pipeline(
             adapter,
             skill_io=skill_io,
+            llm=llm_instance,            # explicit provider; None for dry-run
             top_n=top_n,
             do_validate=True,
             fix_sample=fix_sample,

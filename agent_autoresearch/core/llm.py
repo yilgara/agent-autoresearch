@@ -1,13 +1,21 @@
 """LLM provider abstraction.
 
-The strategy + replay code never imports `anthropic` directly — it
-goes through `LLMProvider`. That gives us a single seam to swap
-backends (OpenAI, Bedrock, OpenRouter) in v0.3 without touching the
-strategies or prompts.
+The strategy + replay code never imports `anthropic` or `openai` directly
+— it goes through `LLMProvider`. That gives us a single seam to swap
+backends (or use mocks in tests) without touching strategies or prompts.
 
-For v0.x, the only built-in provider is Anthropic Sonnet, which is
-the default. Users who want a different backend implement
-`LLMProvider` and pass an instance into the pipeline.
+Two providers ship with the library:
+  - `AnthropicLLMProvider`  (default — Sonnet 4.5)
+  - `OpenAILLMProvider`     (opt-in — GPT-4o)
+
+Pick which one runs by:
+  1. setting `AUTORESEARCH_LLM_PROVIDER=openai` in the env, or
+  2. passing `--llm-provider openai` on the CLI, or
+  3. constructing the provider directly and passing `llm=` to
+     `run_pipeline()` from Python.
+
+To add a new provider (Bedrock, OpenRouter, etc.), subclass
+`LLMProvider` and register it in `default_llm_provider()`.
 """
 
 from __future__ import annotations
@@ -35,11 +43,6 @@ class LLMProvider(ABC):
 
     Implementations should be stateless wrappers — config (API key,
     model, timeout) is set in `__init__`, the call itself is pure.
-
-    The library only ever uses the system+user-message pattern; we
-    don't expose tool-use, streaming, multi-turn chat, or embeddings.
-    Strategies that need richer behavior would subclass this with
-    additional methods, but v0.x doesn't.
     """
 
     @abstractmethod
@@ -58,7 +61,7 @@ class LLMProvider(ABC):
         """
 
 
-# ── Anthropic default ───────────────────────────────────────────────────────
+# ── Anthropic provider ──────────────────────────────────────────────────────
 
 _DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 
@@ -67,10 +70,7 @@ class AnthropicLLMProvider(LLMProvider):
     """Default Anthropic Sonnet provider.
 
     Reads `ANTHROPIC_API_KEY` from the environment. Pass a custom
-    `model` to swap to Haiku or Opus. The library defaults to
-    Sonnet 4.5 because most calls (program / propose / critic /
-    judge) want the strongest reasoning available; Haiku is a
-    reasonable fallback for the cheapest steps once you've tuned.
+    `model` to swap to Haiku or Opus.
     """
 
     def __init__(
@@ -78,7 +78,7 @@ class AnthropicLLMProvider(LLMProvider):
         model: str = _DEFAULT_ANTHROPIC_MODEL,
         *,
         api_key: str | None = None,
-        client=None,                    # for tests; defaults to a real anthropic.Anthropic
+        client=None,                    # for tests; defaults to anthropic.Anthropic
     ):
         self.model = model
 
@@ -111,12 +111,124 @@ class AnthropicLLMProvider(LLMProvider):
         )
 
 
-# ── Default factory used by the orchestrator when no provider is supplied ──
+# ── OpenAI provider ─────────────────────────────────────────────────────────
 
-def default_llm_provider() -> LLMProvider:
-    """Build the default provider from environment.
+_DEFAULT_OPENAI_MODEL = "gpt-4o"
 
-    Currently always Anthropic. v0.3 will look at an
-    `AUTORESEARCH_LLM_PROVIDER` env var to pick between providers.
+
+class OpenAILLMProvider(LLMProvider):
+    """OpenAI GPT-4o provider (opt-in).
+
+    Reads `OPENAI_API_KEY` from the environment. To use this provider:
+
+        pip install agent-autoresearch[openai]    # installs the openai SDK
+
+        # then either
+        export AUTORESEARCH_LLM_PROVIDER=openai
+        # or pass `--llm-provider openai` on the CLI
+        # or instantiate directly:
+        from agent_autoresearch.core.llm import OpenAILLMProvider
+        provider = OpenAILLMProvider(model="gpt-4o-mini")
+
+    The system + user pair is sent as the standard two-message chat
+    completion. Token usage is mapped from OpenAI's
+    `prompt_tokens`/`completion_tokens` to the library's
+    `input_tokens`/`output_tokens` for cross-provider compatibility.
+
+    Note: this provider uses the standard `chat.completions.create`
+    endpoint with a `max_tokens` parameter — it works for gpt-4o,
+    gpt-4-turbo, gpt-4, gpt-3.5-turbo. The newer reasoning models
+    (o1-preview, o1-mini) use `max_completion_tokens` instead and
+    aren't supported here without a custom client; pass `client=`
+    if you need to call those.
     """
-    return AnthropicLLMProvider()
+
+    def __init__(
+        self,
+        model: str = _DEFAULT_OPENAI_MODEL,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client=None,                    # for tests; defaults to openai.OpenAI
+    ):
+        self.model = model
+
+        if client is None:
+            try:
+                import openai   # imported lazily — optional dep
+            except ImportError as exc:
+                raise RuntimeError(
+                    "OpenAILLMProvider requires the `openai` package. "
+                    "Install it with: pip install agent-autoresearch[openai]"
+                ) from exc
+            key = api_key or os.environ.get("OPENAI_API_KEY", "").strip()
+            if not key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is not set. "
+                    "Either set the env var or pass api_key= to OpenAILLMProvider."
+                )
+            kwargs: dict = {"api_key": key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            self._client = openai.OpenAI(**kwargs)
+        else:
+            self._client = client
+
+    def call(self, *, system: str, user: str, max_tokens: int) -> LLMResponse:
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+        # OpenAI response: choices[0].message.content
+        choice = resp.choices[0] if resp.choices else None
+        text = choice.message.content if choice and choice.message else ""
+        usage = getattr(resp, "usage", None)
+        # Map OpenAI's prompt_tokens/completion_tokens to the library's
+        # input_tokens/output_tokens for cross-provider consistency.
+        return LLMResponse(
+            text=text or "",
+            input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+            output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+            model=getattr(resp, "model", self.model),
+        )
+
+
+# ── Default factory ─────────────────────────────────────────────────────────
+
+# Names accepted in env / CLI for each provider — comparison is
+# case-insensitive and aliases are forgiving.
+_PROVIDER_ALIASES: dict[str, type[LLMProvider]] = {
+    "anthropic": AnthropicLLMProvider,
+    "claude":    AnthropicLLMProvider,
+    "openai":    OpenAILLMProvider,
+    "gpt":       OpenAILLMProvider,
+}
+
+
+def default_llm_provider(name: str | None = None) -> LLMProvider:
+    """Build the default provider from name/env.
+
+    Resolution order:
+      1. explicit `name` argument
+      2. `AUTORESEARCH_LLM_PROVIDER` env var
+      3. fall back to "anthropic"
+
+    Returns a freshly-constructed provider — repeated calls don't
+    share the underlying SDK client.
+    """
+    chosen = (
+        (name or os.environ.get("AUTORESEARCH_LLM_PROVIDER", "")).strip().lower()
+        or "anthropic"
+    )
+    cls = _PROVIDER_ALIASES.get(chosen)
+    if cls is None:
+        valid = sorted(set(_PROVIDER_ALIASES.keys()))
+        raise RuntimeError(
+            f"Unknown LLM provider {chosen!r}. "
+            f"Valid options: {', '.join(valid)}."
+        )
+    return cls()
