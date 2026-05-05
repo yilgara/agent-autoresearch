@@ -26,7 +26,7 @@ from agent_autoresearch.pipeline import run_pipeline
 
 # ── Path to the example skills bundled in the repo ──────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]   # tests/v1/ → repo root
 EXAMPLE_SKILLS = REPO_ROOT / "examples" / "synthetic-skills"
 
 
