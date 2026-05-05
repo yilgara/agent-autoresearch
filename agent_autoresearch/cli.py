@@ -2,7 +2,7 @@
 
 Run with:
 
-    autoresearch run --adapter <name> [--top-n N] [--no-validate] ...
+    autoresearch run --adapter <name> [--top-n N] [--strategy v1|v2|v3] ...
 
 The CLI does three things and tries to do nothing else:
 
@@ -53,7 +53,6 @@ _LABEL_STYLE = {
     "HUMAN_REVIEW":  "bold yellow",
     "REJECT":        "bold red",
     "SKIP":          "dim",
-    "NO_VALIDATION": "dim",
 }
 
 
@@ -271,14 +270,13 @@ def cmd_run(
             f"[{style}]{r.verdict.label}[/{style}]"
         )
 
-    # 6. Run the pipeline (validation always on; per-target failures isolated)
+    # 6. Run the pipeline (per-target failures isolated)
     try:
         result = run_pipeline(
             adapter,
             skill_io=skill_io,
             llm=llm_instance,            # explicit provider; None for dry-run
             top_n=top_n,
-            do_validate=True,
             fix_sample=fix_sample,
             baseline_sample=baseline_sample,
             outputs_root=outputs_root,

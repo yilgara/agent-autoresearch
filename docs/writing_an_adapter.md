@@ -411,9 +411,12 @@ sentences make the strategy doc messy.
 
 When constructing `Conversation.turns`, copy the user/agent text
 **verbatim** from your logs. Replay needs the actual words, not a
-summary. If your eval system stores summaries, fall back to a no-op
-adapter for replay (`load_conversations` returns empty) — autoresearch
-will skip the validation phase and verdicts default to NO_VALIDATION.
+summary. If your eval system only stores summaries, replay against
+those sessions will be misleading — better to either (a) get the raw
+transcripts from a different store, or (b) skip those sessions in
+your adapter (don't include their IDs in `fix_session_ids` /
+`regression_baseline_ids`). Replay always runs in the pipeline; it
+just operates on whatever sessions you provide.
 
 ---
 

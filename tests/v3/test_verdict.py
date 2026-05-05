@@ -67,7 +67,7 @@ def _all_pass_replay(n_fix: int = 10, n_baseline: int = 10) -> ReplayResult:
     )
 
 
-# ── SKIP / NO_VALIDATION ────────────────────────────────────────────────────
+# ── SKIP / contract violation ───────────────────────────────────────────────
 
 def test_skip_action_returns_skip():
     v = compute_verdict(
@@ -77,20 +77,13 @@ def test_skip_action_returns_skip():
     assert v.label == "SKIP"
 
 
-def test_no_replay_no_critic_no_validation():
-    v = compute_verdict(
-        skill_name="x", propose_result=_propose(),
-        critic_result=None, replay_result=None,
-    )
-    assert v.label == "NO_VALIDATION"
-
-
-def test_no_replay_critic_rejects_returns_reject():
-    v = compute_verdict(
-        skill_name="x", propose_result=_propose(),
-        critic_result=_critic(approves=False), replay_result=None,
-    )
-    assert v.label == "REJECT"
+def test_replay_none_with_edit_action_raises():
+    """Replay always runs for edits — passing None is a caller bug."""
+    with pytest.raises(ValueError, match="replay_result is None"):
+        compute_verdict(
+            skill_name="x", propose_result=_propose(),
+            critic_result=_critic(approves=True), replay_result=None,
+        )
 
 
 # ── Hard rejects ────────────────────────────────────────────────────────────

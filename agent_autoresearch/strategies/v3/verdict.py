@@ -11,7 +11,6 @@ No LLM here. Pure logic that takes:
   - **HUMAN_REVIEW** — gates ambiguous; needs a human eye
   - **REJECT**       — at least one hard-reject gate triggered
   - **SKIP**         — propose returned skip; nothing to verdict on
-  - **NO_VALIDATION** — replay was disabled
 
 ## v3 thresholds
 
@@ -58,7 +57,6 @@ VerdictLabel = Literal[
     "HUMAN_REVIEW",
     "REJECT",
     "SKIP",
-    "NO_VALIDATION",
 ]
 
 
@@ -116,23 +114,12 @@ def compute_verdict(
 
     critic_label = critic_result.verdict if critic_result else None
 
-    # 2. Replay disabled — fall back to v1/v2 semantics
+    # Replay always runs for the edit path; if replay_result is None
+    # here, the caller violated the contract — fail loudly.
     if replay_result is None:
-        if critic_result and not critic_result.approves:
-            return Verdict(
-                skill_name=skill_name, label="REJECT",
-                reason=(
-                    "Critic returned REQUEST_CHANGES: "
-                    + (", ".join(critic_result.concerns) or critic_result.reasoning)
-                ),
-                propose_action=propose_result.action,
-                critic_verdict=critic_label,
-            )
-        return Verdict(
-            skill_name=skill_name, label="NO_VALIDATION",
-            reason="Replay was disabled. Human must review without replay scores.",
-            propose_action=propose_result.action,
-            critic_verdict=critic_label,
+        raise ValueError(
+            f"compute_verdict({skill_name=}): replay_result is None for an "
+            "edit action. Replay always runs for edits in the pipeline."
         )
 
     # Pull rates once for readability
@@ -215,7 +202,6 @@ _LABEL_BADGE = {
     "HUMAN_REVIEW":   "🟡 HUMAN_REVIEW",
     "REJECT":         "🔴 REJECT",
     "SKIP":           "⚪ SKIP",
-    "NO_VALIDATION":  "⚪ NO_VALIDATION",
 }
 
 
@@ -276,10 +262,5 @@ def _render_verdict_md(v: Verdict) -> str:
         lines.append(
             "The proposer chose not to attempt an edit. Re-evaluate after "
             "the next eval run."
-        )
-    elif v.label == "NO_VALIDATION":
-        lines.append(
-            "Replay was disabled. A human reviewer must read `diff.txt`, "
-            "`program.md`, and `critic.md` and decide manually."
         )
     return "\n".join(lines)

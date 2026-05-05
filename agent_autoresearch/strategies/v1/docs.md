@@ -18,7 +18,7 @@ starting point if you've never run autoresearch on your data before
 | `critic` | 1 | `<verdict>APPROVE / REQUEST_CHANGES</verdict>` |
 | `responder` (per session) | 1 × N | `<reply>` under the new skill |
 | `judge` (per session) | 1 × N | `<winner>new / old / tie</winner>` |
-| `compute_verdict` | 0 | One of `ACCEPT / HUMAN_REVIEW / REJECT / SKIP / NO_VALIDATION` |
+| `compute_verdict` | 0 | One of `ACCEPT / HUMAN_REVIEW / REJECT / SKIP` |
 
 Total per target with 3 fix + 3 baseline replays: **3 + 12 = 15 LLM
 calls** ≈ $0.07 with Sonnet 4.5.

@@ -7,7 +7,6 @@ and step 7 (replay) and emits one of:
   - **HUMAN_REVIEW** — gates ambiguous; needs a human eye
   - **REJECT**       — at least one gate failed; don't ship
   - **SKIP**         — propose returned skip; nothing to verdict on
-  - **NO_VALIDATION** — replay was disabled (`--no-validate`)
 
 Thresholds in `THRESHOLDS` are conservative on purpose: burden of
 proof is on the new skill. Tune after observing 5-10 real runs.
@@ -44,7 +43,6 @@ VerdictLabel = Literal[
     "HUMAN_REVIEW",
     "REJECT",
     "SKIP",
-    "NO_VALIDATION",
 ]
 
 
@@ -90,23 +88,12 @@ def compute_verdict(
 
     critic_label = critic_result.verdict if critic_result else None
 
-    # 2. Replay disabled → human must judge alone (unless critic clearly rejects)
+    # Replay is always run for the edit path; if replay_result is None
+    # here, the caller violated the contract — fail loudly.
     if replay_result is None:
-        if critic_result and not critic_result.approves:
-            return Verdict(
-                skill_name=skill_name, label="REJECT",
-                reason=(
-                    "Critic returned REQUEST_CHANGES: "
-                    + (", ".join(critic_result.concerns) or critic_result.reasoning)
-                ),
-                propose_action=propose_result.action,
-                critic_verdict=critic_label,
-            )
-        return Verdict(
-            skill_name=skill_name, label="NO_VALIDATION",
-            reason="Replay was disabled. Human must review without replay scores.",
-            propose_action=propose_result.action,
-            critic_verdict=critic_label,
+        raise ValueError(
+            f"compute_verdict({skill_name=}): replay_result is None for an "
+            "edit action. Replay always runs for edits in the pipeline."
         )
 
     # 3. Hard rejects
@@ -186,7 +173,6 @@ _LABEL_BADGE = {
     "HUMAN_REVIEW":   "🟡 HUMAN_REVIEW",
     "REJECT":         "🔴 REJECT",
     "SKIP":           "⚪ SKIP",
-    "NO_VALIDATION":  "⚪ NO_VALIDATION",
 }
 
 
@@ -243,11 +229,5 @@ def _render_verdict_md(v: Verdict) -> str:
             "The proposer chose not to attempt an edit. This is correct "
             "behavior when evidence is too weak or contradictory. "
             "Re-evaluate after the next eval run."
-        )
-    elif v.label == "NO_VALIDATION":
-        lines.append(
-            "Replay was disabled. A human reviewer must read "
-            "`diff.txt`, `program.md`, and `critic.md` and decide. "
-            "For higher-confidence verdicts, re-run with replay enabled."
         )
     return "\n".join(lines)

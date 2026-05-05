@@ -132,7 +132,6 @@ THRESHOLDS = {
 | `REJECT` | `fix_rate < 30%` OR `binary_checks < 80%` OR critic REQUEST_CHANGES |
 | `HUMAN_REVIEW` | Anything between (above hard-reject floors but below all 4 acceptance gates) |
 | `SKIP` | propose returned skip |
-| `NO_VALIDATION` | replay was disabled |
 
 ## program.md schema (v3)
 

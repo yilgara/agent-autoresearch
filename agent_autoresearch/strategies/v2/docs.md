@@ -29,64 +29,70 @@ are different.
 ```mermaid
 flowchart TB
     %% ── Inputs ──
-    PROG[/"<b>program.md</b><br/>strategy doc<br/><i>same as v1</i>"/]:::io
+    PROG[/"<b>program.md</b><br/>strategy doc"/]:::io
     SK[/"Current SKILL.md"/]:::io
-    EV[/"target.evidence<br/><i>list of failure findings</i>"/]:::io
+    EV[/"target.evidence"/]:::io
 
-    %% ── Per-evidence outer loop ──
-    subgraph LOOP[" For each evidence (no version cap) "]
-        direction TB
+    %% ── Initial state ──
+    INIT["<b>state</b> ← SKILL.md<br/><b>accepted_log</b> ← [ ]<br/><b>idx</b> ← 0 (first evidence)<br/><b>attempt</b> ← 1"]:::nollm
+    PROG --> INIT
+    SK --> INIT
+    EV --> INIT
 
-        START["<b>state</b> ← current SKILL.md +<br/>previously accepted changes"]:::nollm
+    %% ── Atomic propose call (one per attempt) ──
+    P1["<b>propose_atomic</b><br/>1 LLM call<br/><i>sees: state, evidence[idx],<br/>accepted_log, previous attempts</i>"]:::llm
+    INIT --> P1
 
-        %% ── Per-evidence inner retry loop ──
-        subgraph RETRY[" Inner loop · max 3 attempts per evidence "]
-            direction TB
-            P1["<b>propose_atomic</b><br/>1 LLM call<br/>→ edit / skip / done"]:::llm
-            ACT{{"<b>action?</b>"}}:::decision
-            CR["<b>critic_per_attempt</b><br/>1 LLM call on small diff"]:::llm
-            RP["<b>replay_per_attempt</b><br/>1 fix session<br/><i>2 LLM calls</i>"]:::llm
-            BOTH{{"both gates<br/>passed?"}}:::decision
-            ACCEPT["<b>accept</b><br/>state += change<br/>→ next evidence"]:::nollm
-            P1 --> ACT
-            ACT == "edit" ==> CR
-            CR --> RP
-            RP --> BOTH
-            BOTH == "yes" ==> ACCEPT
-            BOTH == "no" ==> P1
-        end
+    %% ── Action gate ──
+    ACT{{"<b>action?</b>"}}:::decision
+    P1 --> ACT
 
-        START --> P1
-        ACT -. "skip" .-> NXT[ ]:::skipnode
-        ACT -. "done" .-> EXIT[ ]:::skipnode
-    end
+    %% three branches: edit | skip | done
+    ACT -- "edit" --> CR
+    ACT -. "skip<br/>(this evidence)" .-> NEXT
+    ACT -. "done<br/>(stop entire loop)" .-> FC
 
-    EV --> START
-    PROG --> P1
-    SK --> START
+    %% ── Per-attempt validation (edit path only) ──
+    CR["<b>critic_per_attempt</b><br/>1 LLM call · small diff"]:::llm
+    CR --> CRDEC{{"approves?"}}:::decision
+    CRDEC == "yes" ==> RP
+    CRDEC == "no" ==> RETRY
 
-    %% ── After loop: final validation ──
-    subgraph FINAL[" Final pass · run on cumulative state "]
-        direction TB
-        FC["<b>final_critic</b><br/>full diff (orig → final)"]:::llm
-        FR["<b>final_replay</b><br/>full fix + baseline sample"]:::llm
-        OK{{"both pass?"}}:::decision
-        FC --> OK
-        FR --> OK
-    end
-    ACCEPT --> FC
-    EXIT --> FC
+    RP["<b>replay_per_attempt</b><br/>2 LLM calls · 1 fix session"]:::llm
+    RP --> RPDEC{{"new wins?"}}:::decision
+    RPDEC == "yes" ==> ACCEPT
+    RPDEC == "no" ==> RETRY
 
-    %% Recursive rollback
-    OK == "no" ==> POP["<b>pop last accepted</b><br/>state -= last change"]:::nollm
+    %% ── Retry budget ──
+    RETRY{{"attempt &lt; 3?"}}:::decision
+    RETRY == "yes (retry · attempt += 1)" ==> P1
+    RETRY == "no (3 strikes — give up<br/>on this evidence)" ==> NEXT
+
+    %% ── Accept this evidence's change, then next ──
+    ACCEPT["<b>accept</b><br/>state += change<br/>accepted_log += change"]:::nollm
+    ACCEPT --> NEXT
+
+    %% ── Outer loop control ──
+    NEXT{{"more<br/>evidence?"}}:::decision
+    NEXT == "yes (idx += 1, attempt = 1)" ==> P1
+    NEXT == "no" ==> FC
+
+    %% ── Final combined validation ──
+    FC["<b>final_critic</b><br/>1 LLM call · cumulative diff<br/>(orig → state)"]:::llm
+    FC --> FR
+    FR["<b>final_replay</b><br/>full fix + baseline sample"]:::llm
+    FR --> OK{{"both<br/>pass?"}}:::decision
+
+    %% ── Recursive rollback ──
+    OK == "no" ==> POP["<b>pop last accepted</b><br/>state -= last change<br/>accepted_log -= last"]:::nollm
     POP --> EMPTY{{"accepted_log<br/>empty?"}}:::decision
-    EMPTY == "no" ==> FC
-    EMPTY == "yes" ==> SKIPV["<b>SKIP verdict</b><br/>nothing left after rollback"]:::verdict
+    EMPTY == "no (re-validate)" ==> FC
+    EMPTY == "yes" ==> SKIPV{{"<b>SKIP verdict</b><br/>nothing left after rollback"}}:::verdict
 
-    %% Success → orchestrator's canonical critic + replay + verdict
-    OK == "yes" ==> RESULT["<b>ProposeResult</b><br/>action=edit<br/>accepted_log<br/>combined_check_passed"]:::nollm
-    RESULT --> ORCH["<b>orchestrator</b><br/>canonical critic + replay<br/><i>same as v1, same v_new</i>"]:::nollm
-    ORCH --> V{{"<b>compute_verdict</b><br/><i>same 2-axis thresholds as v1</i>"}}:::verdict
+    %% ── Success path ──
+    OK == "yes" ==> RESULT["<b>ProposeResult</b><br/>action=edit<br/>+ accepted_log"]:::nollm
+    RESULT --> ORCH["orchestrator<br/>canonical critic + replay"]:::nollm
+    ORCH --> V{{"<b>compute_verdict</b><br/><i>2-axis, same as v1</i>"}}:::verdict
 
     %% ── Styling ──
     classDef nollm fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
@@ -94,10 +100,6 @@ flowchart TB
     classDef io fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
     classDef verdict fill:#FFF9C4,stroke:#F9A825,stroke-width:3px,color:#F57F17
     classDef decision fill:#F3E5F5,stroke:#8E24AA,stroke-width:2px,color:#4A148C
-    classDef skipnode fill:#FFFFFF,stroke:#FFFFFF,color:#FFFFFF
-    style LOOP fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
-    style RETRY fill:#FFFFFF,stroke:#BDBDBD,stroke-dasharray:3 3
-    style FINAL fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
 ```
 
 ## What "validation per attempt" actually means

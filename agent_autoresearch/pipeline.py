@@ -118,7 +118,6 @@ def run_target(
     run_id: str,
     outputs_root: Path,
     llm: LLMProvider | None = None,
-    do_validate: bool = True,
     fix_sample: int = DEFAULT_FIX_SAMPLE,
     baseline_sample: int = DEFAULT_BASELINE_SAMPLE,
     on_stage: StageHook | None = None,
@@ -189,7 +188,6 @@ def run_target(
             current_skill_md=current_skill_md,
             program_result=prog,
             conversations=conversations,
-            do_validate=do_validate,
             fix_sample=fix_sample,
             baseline_sample=baseline_sample,
             llm=llm,
@@ -243,25 +241,25 @@ def run_target(
     write_artifact(target.skill_name, "critic.md", crit.to_markdown(),
                    run_id=run_id, outputs_root=outputs_root)
 
-    # Step 7 — replay (optional)
-    rep: ReplayResult | None = None
-    if do_validate:
-        _hook("replay")
-        replay_kwargs: dict = dict(
-            new_skill_md=prop.new_skill_md,
-            program_md=prog.program_md,
-            conversations=conversations,
-            fix_sample=fix_sample,
-            baseline_sample=baseline_sample,
-            llm=llm,
-        )
-        # v3 needs the rubric + checks for structured judging
-        if version == "v3":
-            replay_kwargs["rubric_axes"] = prog.rubric_axes
-            replay_kwargs["binary_checks"] = prog.binary_checks
-        rep = strategy_mod.soft_replay(target, **replay_kwargs)
-        write_artifact(target.skill_name, "replay.md", rep.to_markdown(),
-                       run_id=run_id, outputs_root=outputs_root)
+    # Step 7 — replay (always runs for the edit path; the only way to
+    # skip this is to skip the whole target via propose action='skip',
+    # which short-circuited above)
+    _hook("replay")
+    replay_kwargs: dict = dict(
+        new_skill_md=prop.new_skill_md,
+        program_md=prog.program_md,
+        conversations=conversations,
+        fix_sample=fix_sample,
+        baseline_sample=baseline_sample,
+        llm=llm,
+    )
+    # v3 needs the rubric + checks for structured judging
+    if version == "v3":
+        replay_kwargs["rubric_axes"] = prog.rubric_axes
+        replay_kwargs["binary_checks"] = prog.binary_checks
+    rep: ReplayResult = strategy_mod.soft_replay(target, **replay_kwargs)
+    write_artifact(target.skill_name, "replay.md", rep.to_markdown(),
+                   run_id=run_id, outputs_root=outputs_root)
 
     # Step 8 — verdict
     _hook("verdict")
@@ -288,7 +286,6 @@ def _build_atomic_validators(
     current_skill_md: str,
     program_result,
     conversations: dict,
-    do_validate: bool,
     fix_sample: int,
     baseline_sample: int,
     llm: LLMProvider,
@@ -380,8 +377,6 @@ def _build_atomic_validators(
         Builds a one-session mini-target, runs the strategy's replay
         with sample=1, and accepts only if the new wins outright.
         """
-        if not do_validate:
-            return True, "(replay disabled)"
         if conv is None:
             return True, "(no transcript for evidence session — can't replay)"
         sid = conv.session_id
@@ -422,8 +417,6 @@ def _build_atomic_validators(
 
     def final_replay(candidate_md: str, _target, _convs) -> tuple[bool, str]:
         """Full replay over the configured fix + baseline sample."""
-        if not do_validate:
-            return True, "(replay disabled)"
         rep = strategy_mod.soft_replay(target, **_full_replay_kwargs(candidate_md))
         captures["final_replay_result"] = rep
         return _check_replay_thresholds(rep)
@@ -444,7 +437,6 @@ def run_pipeline(
     skill_io: SkillIO | None = None,
     llm: LLMProvider | None = None,
     top_n: int = 3,
-    do_validate: bool = True,
     fix_sample: int = DEFAULT_FIX_SAMPLE,
     baseline_sample: int = DEFAULT_BASELINE_SAMPLE,
     outputs_root: Path | None = None,
@@ -512,7 +504,6 @@ def run_pipeline(
                 t, conversations,
                 skill_io=skill_io, llm=llm,
                 run_id=run_id, outputs_root=outputs_root,
-                do_validate=do_validate,
                 fix_sample=fix_sample, baseline_sample=baseline_sample,
                 on_stage=on_stage,
                 strategy=strategy,
@@ -555,7 +546,6 @@ _LABEL_BADGE = {
     "HUMAN_REVIEW":   "🟡 HUMAN_REVIEW",
     "REJECT":         "🔴 REJECT",
     "SKIP":           "⚪ SKIP",
-    "NO_VALIDATION":  "⚪ NO_VALIDATION",
 }
 
 
