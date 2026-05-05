@@ -2,10 +2,10 @@
 
 > Auto-improve agent skill prompts from your eval pipeline output.
 
-Take one day's worth of agent-evaluation findings, propose targeted edits
-to the underlying skill prompts, validate the proposals via simulated
+Take one batch of agent-evaluation findings, propose targeted edits to
+the underlying skill prompts, validate the proposals via simulated
 replay against real failed sessions, and hand the verified diffs to a
-human for review. End-to-end LLM cost is ~$1 per run on top-3 targets.
+human for review.
 
 Inspired by [karpathy/autoresearch][karpathy] (autonomous overnight ML
 research), but for agent **skill prompts** rather than ML training
@@ -15,48 +15,45 @@ code.
 
 > **⚠️ v0.x — early access.** The pipeline runs end-to-end and produces
 > useful proposals, but the prompts and thresholds are still being
-> calibrated. 
+> calibrated against real eval data.
 
 ---
 
 ## What it does
 
 You bring:
-- A list of skills (or any agent prompts) on disk
-- A daily eval report identifying which skills are failing
-- Transcripts of the failing sessions
+- Skill prompts on disk (`skills/<name>/SKILL.md`)
+- Either pass/fail labels for past sessions, or just raw transcripts
+- Session transcripts in JSONL or JSON
 
 The loop produces, per skill:
-1. A focused improvement strategy (`program.md`) — generated from your eval evidence
-2. A proposed `v_new.md` for the skill — an Edit, or an explicit Skip
+1. A focused improvement strategy (`program.md`) — generated from your evidence
+2. A proposed `v_new.md` — an Edit, or an explicit Skip
 3. A critic's audit of the diff (Validation Layer A)
 4. A soft-replay run against real failed sessions + passing baselines (Validation Layer B)
 5. A deterministic verdict: **ACCEPT** / **HUMAN_REVIEW** / **REJECT** / **SKIP**
 
-Approved diffs land in `outputs/run_<ts>/<skill>/` for manual review.
+Approved diffs land in `outputs/<run_id>/<skill>/` for manual review.
 The library **never auto-merges** to your skills directory — every
 shipped change goes through human eyes.
 
 ## Pipeline
 
-The 8 steps split across three phases:
-
 ```
 Phase A · Parse + Combine    (no LLM)
-    1. Parse eval reports
-    2. Load session transcripts
-    3. Build per-skill Target bundles
+    1. Adapter loads targets + transcripts
+    2. Pipeline picks top-N by failure count
 
 Phase B · Propose            (3 LLM calls per target)
-    4. build_program — strategy doc per target
-    5. propose      — Edit / Skip + new SKILL.md if editing
-    6. critic       — audit the diff (Validation Layer A)
+    3. program  — strategy doc per target
+    4. propose  — Edit / Skip + new SKILL.md
+    5. critic   — audit the diff (Validation Layer A)
 
 Phase C · Validate           (2 LLM calls × N sessions per target)
-    7. soft replay  — responder + judge per session (Validation Layer B)
+    6. soft replay — responder + judge per session (Validation Layer B)
 
-Step 8 · Verdict             (deterministic — no LLM)
-    8. Combine critic + replay scores → ACCEPT / HUMAN_REVIEW / REJECT
+Step 7 · Verdict             (deterministic — no LLM)
+    Combine critic + replay scores → ACCEPT / HUMAN_REVIEW / REJECT
 ```
 
 Full architecture details: [`docs/pipeline.md`](docs/pipeline.md).
@@ -66,79 +63,81 @@ Full architecture details: [`docs/pipeline.md`](docs/pipeline.md).
 ### 1. Install
 
 ```bash
-pip install agent-autoresearch
+pip install agent-autoresearch    # or: pip install -e . from the cloned repo
 ```
 
-### 2. Try a dry-run with synthetic data
+### 2. Try the bundled synthetic demo (full pipeline, real LLM)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+autoresearch run --adapter synthetic \
+                 --skills-root examples/synthetic-skills \
+                 --top-n 1
+```
+
+Runs the full 8-step pipeline against bundled hardcoded fixtures + 2
+example skill files. Expect ~$0.10 in API cost. Output lands in
+`outputs/<run_id>/find-restaurant/` — read `verdict.md`, then `diff.txt`.
+
+For a no-network sanity check, drop `--top-n 1` and add `--dry-run`:
 
 ```bash
 autoresearch run --adapter synthetic --dry-run
 ```
 
-No API key needed — parses bundled example data and prints the targets
-the pipeline would operate on.
-
 ### 3. Live run with your data
 
+Pick the adapter that matches what you have:
+
+| You have… | Use |
+|---|---|
+| Pre-labeled CSV + transcripts | `--adapter csv` |
+| Just transcripts (no labels) | `--adapter jsonl_judge` (LLM-judges them, then reuses csv) |
+| A custom eval pipeline | Write your own — see [`docs/writing_an_adapter.md`](docs/writing_an_adapter.md) |
+
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-autoresearch run --adapter <your-adapter> --top-n 3
+autoresearch run --adapter csv \
+                 --skills-root ./skills \
+                 --top-n 3
 ```
 
-Outputs land in `outputs/run_<ts>/<repo>/<skill>/`. Read the
-`verdict.md` first; if ACCEPT, eyeball `diff.txt`, then copy
-`v_new.md` to your skills repo manually.
+See [`docs/csv_adapter.md`](docs/csv_adapter.md) for the CSV schema +
+file layout.
 
 ## Architecture
 
-The library is split into a **stable core** (the pipeline + LLM
-calls) and **pluggable adapters** (your eval format, your skill
-storage, your LLM provider).
+The library is split into a **stable core** (the pipeline + LLM calls)
+and **pluggable adapters** (your eval format, your skill storage, your
+LLM provider).
 
 ### Core abstractions
 
-- **`Target`** — one skill the pipeline is trying to improve. Carries
-  `evidence` (your eval findings), `fix_sessions` (where the skill
-  broke), `regression_baselines` (where it worked).
-- **`SkillIO`** — abstract interface for loading and writing skill
-  prompts. Default `FilesystemSkillIO` covers most teams.
-- **`EvidenceSource`** — abstract interface for "give me the failures
-  and transcripts for run X." Each eval pipeline implements its own.
-- **`Conversation`** — schema-stable representation of a session
-  transcript. Adapters convert their own session format into this.
-- **`LLMProvider`** — abstract interface; default impl is Anthropic.
-
+- **`Adapter`** — loads `Target` + `Conversation` shapes from your
+  data source (eval reports, JSONL, DB, anywhere)
+- **`SkillIO`** — loads + writes skill prompts. Default
+  `FilesystemSkillIO` covers `skills/<name>/SKILL.md` layouts
+- **`LLMProvider`** — chat-completion wrapper. Default is Anthropic
+  Sonnet 4.5
 
 ### Writing your own adapter
 
-To wire autoresearch into your own eval pipeline, you implement three
-classes:
+Most teams only need to subclass `Adapter` — `SkillIO` and
+`LLMProvider` have sensible defaults. The adapter implements two
+methods: `load_targets()` and `load_conversations()`.
 
-- **`Adapter`** — translates your eval pipeline's output (reports,
-  database rows, JSON, whatever) into the library's `Target` and
-  `Conversation` shapes.
-- **`SkillIO`** — tells the library how to load and write your skill
-  files. The default `FilesystemSkillIO` works for most layouts; only
-  override if your skills live in something exotic (S3, a DB, a git
-  service).
-- **`LLMProvider`** — optional. The default Anthropic implementation
-  ships with the library. Override only if you need to call a different
-  model provider.
-
-Most teams only need to write the `Adapter` — the other two have
-sensible defaults. See [`docs/writing_an_adapter.md`](docs/writing_an_adapter.md)
-for the full guide with a worked example.
+See [`docs/writing_an_adapter.md`](docs/writing_an_adapter.md) for a
+full worked example.
 
 ## Configuration
 
 | Env var | Required | What it's for |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | yes | All five LLM calls (Sonnet 4.5 by default) |
-| `AUTORESEARCH_INPUTS_DIR` | no (default `./inputs`) | Where adapters look for input files |
-| `AUTORESEARCH_OUTPUTS_DIR` | no (default `./outputs`) | Where results land |
+| `ANTHROPIC_API_KEY` | yes (live runs) | Sonnet 4.5 for all stages |
 
-CLI flags override env defaults — `autoresearch run --help` for the
-full list.
+Everything else is a CLI flag — `autoresearch run --help` for the
+full list. Verdict thresholds live in
+[`agent_autoresearch/strategies/v1/verdict.py`](agent_autoresearch/strategies/v1/verdict.py)
+(the `THRESHOLDS` dict at the top).
 
 ## What's deliberately NOT in the library
 
@@ -152,6 +151,9 @@ full list.
 - **Cross-run dedupe.** If yesterday's report flagged X and today's
   also flags X, the library proposes for both. A future cross-run
   memory layer is on the roadmap.
+- **Skill discovery.** This is an *improvement* loop for skills that
+  already have prompts. Inventing new skills from scratch is a
+  different problem.
 
 ## Honest limitations
 
@@ -161,37 +163,27 @@ full list.
   observing the actual edit in production.
 - **Run-to-run variance.** The proposer LLM doesn't always produce
   identical edits — different runs may yield different verdicts on
-  the same input. This is by design (more exploration); if it's a
-  problem for you, run twice and compare, or pin to a single seed.
+  the same input. By design (more exploration); if it's a problem
+  for you, run twice and compare.
 - **Conservative thresholds.** Default `fix_target_min=70%`,
-  `regression_min=90%`. Tunable in [`config.py`](agent_autoresearch/config.py).
+  `regression_min=90%`. Tune after observing 5–10 real runs.
 
 ## Cost
 
-Per top-N target:
-- Strategy: ~$0.02
-- Propose: ~$0.03
-- Critic: ~$0.01
-- Replay: ~$0.05–0.40 (depends on session count)
-- **Total: ~$0.10–0.50 per target**
+Roughly per top-N target (using Sonnet 4.5):
+- Phase B (program + propose + critic): ~$0.05–0.08
+- Phase C (replay): ~$0.05–0.40 depending on session count
 
-Top-3 targets per run with 3 fix-target + 3 baseline replays each:
-~$1 per autoresearch run. Trivial vs. the value of a single accepted
-skill improvement.
-
+A typical run with `top_n=3, fix_sample=3, baseline_sample=3` lands
+around $1 total — trivial vs. the value of one accepted skill
+improvement.
 
 ## Contributing
 
-PRs welcome. Before opening one:
-
-1. Open an issue describing the problem / change
-2. For prompt changes, run the bundled comparison harness so we can
-   eyeball before/after on the same eval data
-3. New adapters: add tests against your own synthetic data; we don't
-   require you to share your real eval pipeline
+PRs welcome. Before opening one, open an issue describing the change.
+For prompt edits especially, please include a before/after run on real
+or synthetic eval data so reviewers can compare outputs side-by-side.
 
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
-
