@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_autoresearch.adapters.synthetic import SyntheticAdapter
+from tests._synthetic_fixture import SyntheticAdapter
 from agent_autoresearch.core.skill_io import FilesystemSkillIO
 from agent_autoresearch.pipeline import run_target
 

@@ -33,7 +33,10 @@ openai = ["openai>=1.0"]
 [project.scripts]
 autoresearch = "agent_autoresearch.cli:cli"
 
-# Entry-point group for adapter discovery — third-party packages register here:
+# Entry-point group for adapter discovery.
+#
+# Library-shipped adapters live under `agent_autoresearch/adapters/`.
+# Third-party adapters can extend this group from their own pyproject:
 #
 # [project.entry-points."agent_autoresearch.adapters"]
 # myeval = "myeval_adapter:MyEvalAdapter"

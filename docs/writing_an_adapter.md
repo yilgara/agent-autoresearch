@@ -422,15 +422,17 @@ just operates on whatever sessions you provide.
 
 ## Reference: built-in adapters
 
-Both ship in the library — read their source for full examples.
+Three ship in the library — read their source for full examples.
 
-- **[`skilleval`](../agent_autoresearch/adapters/skilleval.py)** — for
-  the [skilleval](https://github.com/yilgara/skilleval) eval pipeline
-  (myT, flume). Parses markdown reports + a JSONL transcript sidecar.
-  ~150 lines.
-- **[`synthetic`](../agent_autoresearch/adapters/synthetic.py)** — generates
-  fake targets and conversations for testing the pipeline without any
-  real eval data. Useful as a tutorial reference.
+- **[`csv`](../agent_autoresearch/adapters/csv.py)** — for teams that
+  already produce labeled eval results in a CSV (one row per
+  `(session, skill)` with pass/fail + reason). No LLM call.
+- **[`jsonl_judge`](../agent_autoresearch/adapters/jsonl_judge.py)** —
+  point at a folder of raw JSONL transcripts; the adapter LLM-judges
+  each session into pass/fail labels, then composes with the `csv`
+  adapter from there.
+- **[`synthetic`](../agent_autoresearch/adapters/synthetic.py)** —
+  hardcoded fixtures for installation smoke checks and tests.
 
 ---
 

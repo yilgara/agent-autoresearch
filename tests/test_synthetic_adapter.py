@@ -8,7 +8,7 @@ demo, evidence pointing at a session that no longer exists, etc.).
 
 from __future__ import annotations
 
-from agent_autoresearch.adapters.synthetic import SyntheticAdapter
+from tests._synthetic_fixture import SyntheticAdapter
 from agent_autoresearch.core.skill_io import UNATTRIBUTED
 
 
