@@ -26,12 +26,10 @@ For find-restaurant which has 2 evidence items:
        8.  fix judge          (winner=new)
        9.  baseline responder
        10. baseline judge     (winner=tie)
-11.    canonical critic              (<verdict>APPROVE</verdict>)  [post-propose]
-12-15. canonical soft_replay (same 4 calls as 7-10)
 ```
 
-Total: 15 LLM calls. v2 doesn't change critic / replay shape from v1,
-so canned responses are simple XML strings.
+Total: 10 LLM calls. The orchestrator reuses propose()'s
+final_critic + final_replay results — no canonical re-run.
 """
 
 from __future__ import annotations
@@ -127,7 +125,7 @@ _JUDGE_TIE = """\
 )
 class TestV2EndToEndAccept:
     def test_full_pipeline_produces_accept(self, tmp_path, fake_llm):
-        # ── Queue all 15 canned responses in pipeline order ─────────────
+        # ── Queue all 10 canned responses in pipeline order ─────────────
         responses = [
             _PROGRAM_MD,                       # 1. build_program
             # evidence #1 attempt
@@ -136,18 +134,12 @@ class TestV2EndToEndAccept:
             # evidence #2 attempt
             _propose_edit("ev2"),              # 4.
             _CRITIC_APPROVE,                   # 5.
-            # final pass inside propose
+            # final pass inside propose (orchestrator reuses these)
             _CRITIC_APPROVE,                   # 6. final_critic
             _RESPONDER,                        # 7. final_replay fix responder
             _JUDGE_NEW,                        # 8. final_replay fix judge
             _RESPONDER,                        # 9. final_replay baseline responder
             _JUDGE_TIE,                        # 10. final_replay baseline judge
-            # canonical pass after propose returns
-            _CRITIC_APPROVE,                   # 11. canonical critic
-            _RESPONDER,                        # 12. canonical replay fix responder
-            _JUDGE_NEW,                        # 13. canonical replay fix judge
-            _RESPONDER,                        # 14. canonical replay baseline responder
-            _JUDGE_TIE,                        # 15. canonical replay baseline judge
         ]
         for r in responses:
             fake_llm.push(r)
@@ -180,8 +172,8 @@ class TestV2EndToEndAccept:
         assert prop.rolled_back_steps == 0
 
         # 3. Exactly the expected number of LLM calls
-        assert len(fake_llm.calls) == 15, (
-            f"Expected 15 LLM calls, got {len(fake_llm.calls)}"
+        assert len(fake_llm.calls) == 10, (
+            f"Expected 10 LLM calls, got {len(fake_llm.calls)}"
         )
 
         # 4. All expected artifacts on disk

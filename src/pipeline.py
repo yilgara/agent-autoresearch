@@ -174,6 +174,7 @@ def run_target(
     # atomic-mutation loop with injected validators that wrap the
     # version's own critic/replay.
     _hook("propose")
+    captures: dict = {"final_critic_result": None, "final_replay_result": None}
     if version == "v1":
         prop = strategy_mod.propose(
             target.skill_name,
@@ -182,7 +183,7 @@ def run_target(
             llm=llm,
         )
     else:
-        validators, _ = _build_atomic_validators(
+        validators, captures = _build_atomic_validators(
             strategy_mod=strategy_mod,
             target=target,
             current_skill_md=current_skill_md,
@@ -233,36 +234,51 @@ def run_target(
                    run_id=run_id, outputs_root=outputs_root)
     diff_text = (new_path.parent / "diff.txt").read_text(encoding="utf-8")
 
-    # Step 6 — critic (canonical pass for verdict)
-    _hook("critic")
-    crit = strategy_mod.critic(
-        target.skill_name,
-        program_md=prog.program_md,
-        diff_text=diff_text,
-        v_old_md=current_skill_md,
-        v_new_md=prop.new_skill_md,
-        llm=llm,
+    # Step 6+7 — critic + replay for verdict.
+    #
+    # v2's propose() already ran final_critic + final_replay on the
+    # cumulative state via the validator captures dict. Reuse those
+    # results instead of re-running the same LLM calls. v1 has no
+    # captures; v3 still uses the per-attempt replay path so the
+    # final captured state may not match — re-run for safety.
+    reuse_captures = (
+        version == "v2"
+        and captures.get("final_critic_result") is not None
+        and captures.get("final_replay_result") is not None
     )
+
+    _hook("critic")
+    if reuse_captures:
+        crit = captures["final_critic_result"]
+    else:
+        crit = strategy_mod.critic(
+            target.skill_name,
+            program_md=prog.program_md,
+            diff_text=diff_text,
+            v_old_md=current_skill_md,
+            v_new_md=prop.new_skill_md,
+            llm=llm,
+        )
     write_artifact(target.skill_name, "critic.md", crit.to_markdown(),
                    run_id=run_id, outputs_root=outputs_root)
 
-    # Step 7 — replay (always runs for the edit path; the only way to
-    # skip this is to skip the whole target via propose action='skip',
-    # which short-circuited above)
     _hook("replay")
-    replay_kwargs: dict = dict(
-        new_skill_md=prop.new_skill_md,
-        program_md=prog.program_md,
-        conversations=conversations,
-        fix_sample=fix_sample,
-        baseline_sample=baseline_sample,
-        llm=llm,
-    )
-    # v3 needs the rubric + checks for structured judging
-    if version == "v3":
-        replay_kwargs["rubric_axes"] = prog.rubric_axes
-        replay_kwargs["binary_checks"] = prog.binary_checks
-    rep: ReplayResult = strategy_mod.soft_replay(target, **replay_kwargs)
+    if reuse_captures:
+        rep: ReplayResult = captures["final_replay_result"]
+    else:
+        replay_kwargs: dict = dict(
+            new_skill_md=prop.new_skill_md,
+            program_md=prog.program_md,
+            conversations=conversations,
+            fix_sample=fix_sample,
+            baseline_sample=baseline_sample,
+            llm=llm,
+        )
+        # v3 needs the rubric + checks for structured judging
+        if version == "v3":
+            replay_kwargs["rubric_axes"] = prog.rubric_axes
+            replay_kwargs["binary_checks"] = prog.binary_checks
+        rep = strategy_mod.soft_replay(target, **replay_kwargs)
     write_artifact(target.skill_name, "replay.md", rep.to_markdown(),
                    run_id=run_id, outputs_root=outputs_root)
 
