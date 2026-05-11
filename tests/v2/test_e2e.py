@@ -162,7 +162,6 @@ class TestV2EndToEndAccept:
         assert prop is not None
         assert prop.action == "edit"
         assert len(prop.accepted_log) == 2     # both evidence got accepted
-        assert prop.combined_check_passed is True
 
         # 3. Exactly the expected number of LLM calls
         assert len(fake_llm.calls) == 9, (

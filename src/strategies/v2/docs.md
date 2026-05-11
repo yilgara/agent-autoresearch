@@ -141,7 +141,6 @@ informational fields:
 
 - `accepted_log: list[AtomicAttempt]` — one entry per accepted change
 - `attempts_log: list[AtomicAttempt]` — every attempt, accepted or not
-- `combined_check_passed: bool`
 
 These don't affect verdict logic; they're for the markdown trace and
 debugging.

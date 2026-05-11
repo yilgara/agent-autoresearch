@@ -111,7 +111,6 @@ class ProposeResult:
     # v2-additive
     accepted_log: list[AtomicAttempt] = field(default_factory=list)
     attempts_log: list[AtomicAttempt] = field(default_factory=list)
-    combined_check_passed: bool = False
 
     @property
     def is_edit(self) -> bool:
@@ -241,7 +240,6 @@ def propose(
         output_tokens=total_out or None,
         accepted_log=accepted_log,
         attempts_log=attempts_log,
-        combined_check_passed=True,
     )
 
 
@@ -333,7 +331,6 @@ def _build_skip_result(
         output_tokens=total_out or None,
         accepted_log=accepted_log or [],
         attempts_log=attempts_log,
-        combined_check_passed=False,
     )
 
 

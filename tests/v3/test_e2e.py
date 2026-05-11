@@ -214,7 +214,6 @@ class TestV3EndToEndAccept:
         assert prop is not None
         assert prop.action == "edit"
         assert len(prop.accepted_log) == 2
-        assert prop.combined_check_passed is True
 
         # 4. Program parsed rubric + binary checks correctly
         prog = result.program_result

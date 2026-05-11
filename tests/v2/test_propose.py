@@ -100,7 +100,6 @@ class TestHappyPath:
             llm=fake_llm,
         )
         assert result.action == "edit"
-        assert result.combined_check_passed is True
         assert len(result.accepted_log) == 1
         assert len(result.attempts_log) == 1
         assert "v1" in (result.new_skill_md or "")
