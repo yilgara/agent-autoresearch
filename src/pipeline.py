@@ -174,7 +174,7 @@ def run_target(
     # atomic-mutation loop with injected validators that wrap the
     # version's own critic/replay.
     _hook("propose")
-    captures: dict = {"final_critic_result": None, "final_replay_result": None}
+    captures: dict = {"final_replay_result": None}
     if version == "v1":
         prop = strategy_mod.propose(
             target.skill_name,
@@ -193,12 +193,6 @@ def run_target(
             baseline_sample=baseline_sample,
             llm=llm,
         )
-        # v2 + v3 dropped:
-        #   - replay_per_attempt: per-attempt gate is critic-only
-        #   - final_critic:       per-attempt critics already validated
-        if version in ("v2", "v3"):
-            validators = {k: v for k, v in validators.items()
-                          if k not in ("replay_per_attempt", "final_critic")}
         prop = strategy_mod.propose(
             target,
             current_skill_md=current_skill_md,
@@ -307,22 +301,19 @@ def _build_atomic_validators(
     baseline_sample: int,
     llm: LLMProvider,
 ):
-    """Build the four validator callables that v2/v3 propose() expects.
+    """Build the validator callables that v2/v3 propose() expects.
 
     Validators wrap the strategy's own `critic()` and `soft_replay()`
     so the atomic-mutation loop's gating decisions use the canonical
-    LLM stages — same prompts, same parsing, same thresholds.
+    LLM stages — same prompts, same parsing.
 
-    Returns `(validators_dict, captures_dict)` where `captures_dict`
-    holds mutable boxes the validators write into. The orchestrator
-    doesn't currently read them (the post-propose canonical critic
-    + replay calls do the verdict-level work), but they're available
-    for future optimisation.
+    Returns `(validators_dict, captures_dict)`. `captures_dict` holds
+    the final ReplayResult so the orchestrator can reuse it without
+    re-running soft_replay.
     """
     import difflib
 
-    captures: dict = {"final_critic_result": None, "final_replay_result": None}
-    version = getattr(strategy_mod, "STRATEGY_VERSION", "v1")
+    captures: dict = {"final_replay_result": None}
 
     def _diff(old: str, new: str) -> str:
         return "".join(difflib.unified_diff(
@@ -340,41 +331,10 @@ def _build_atomic_validators(
             baseline_sample=baseline_sample,
             llm=llm,
         )
-        if version == "v3":
+        if getattr(strategy_mod, "STRATEGY_VERSION", "v1") == "v3":
             kw["rubric_axes"] = program_result.rubric_axes
             kw["binary_checks"] = program_result.binary_checks
         return kw
-
-    def _check_replay_thresholds(rep) -> tuple[bool, str]:
-        """Compare the strategy's full replay result against its acceptance
-        thresholds. Used by the per-attempt gate and the final pass.
-        """
-        thresholds = strategy_mod.THRESHOLDS
-        if version == "v3":
-            # fix_rate is informational only; gates are regression,
-            # binary_checks, and rubric_score.
-            ok = (
-                rep.regression_rate >= thresholds["regression_rate_min"]
-                and rep.binary_checks_pass_rate >= thresholds["binary_checks_min"]
-                and rep.rubric_score >= thresholds["rubric_score_min"]
-            )
-            reason = (
-                f"regr={rep.regression_rate:.0%} "
-                f"checks={rep.binary_checks_pass_rate:.0%} "
-                f"rubric={rep.rubric_score:+.2f} "
-                f"(fix={rep.fix_rate:.0%} info)"
-            )
-        else:
-            # v2: fix_target_min is a strict-> floor (any improvement counts)
-            ok = (
-                rep.fix_target_score > thresholds["fix_target_min"]
-                and rep.regression_score >= thresholds["regression_min"]
-            )
-            reason = (
-                f"fix={rep.fix_target_score:.0%} "
-                f"regr={rep.regression_score:.0%}"
-            )
-        return ok, reason
 
     def critic_per_attempt(candidate_md: str, current_md: str, _ev) -> tuple[bool, str]:
         """Real critic call against the small per-iteration diff."""
@@ -390,60 +350,21 @@ def _build_atomic_validators(
         reason = ", ".join(result.concerns) or result.reasoning
         return result.approves, reason
 
-    def replay_per_attempt(candidate_md: str, evidence, conv) -> tuple[bool, str]:
-        """Lightweight per-iteration replay — single fix-target session.
-
-        Builds a one-session mini-target, runs the strategy's replay
-        with sample=1, and accepts only if the new wins outright.
-        """
-        if conv is None:
-            return True, "(no transcript for evidence session — can't replay)"
-        sid = conv.session_id
-        from dataclasses import replace as dc_replace
-        mini_target = dc_replace(
-            target, fix_session_ids=[sid], regression_baseline_ids=[],
-        )
-        kw: dict = dict(
-            new_skill_md=candidate_md,
-            program_md=program_result.program_md,
-            conversations={sid: conv},
-            fix_sample=1,
-            baseline_sample=0,
-            llm=llm,
-        )
-        if version == "v3":
-            kw["rubric_axes"] = program_result.rubric_axes
-            kw["binary_checks"] = program_result.binary_checks
-        rep = strategy_mod.soft_replay(mini_target, **kw)
-        # New must win outright on this single session
-        ok = rep.fix_target_score >= 1.0
-        return ok, f"fix_target_score={rep.fix_target_score:.0%}"
-
-    def final_critic(candidate_md: str, current_md: str, _ev) -> tuple[bool, str]:
-        """Critic against the full cumulative diff (original → final)."""
-        diff = _diff(current_skill_md, candidate_md)
-        result = strategy_mod.critic(
-            target.skill_name,
-            program_md=program_result.program_md,
-            diff_text=diff,
-            v_old_md=current_skill_md,
-            v_new_md=candidate_md,
-            llm=llm,
-        )
-        captures["final_critic_result"] = result
-        reason = ", ".join(result.concerns) or result.reasoning
-        return result.approves, reason
-
     def final_replay(candidate_md: str, _target, _convs) -> tuple[bool, str]:
-        """Full replay over the configured fix + baseline sample."""
+        """Full replay over the configured fix + baseline sample.
+
+        Stores the ReplayResult in `captures` so the orchestrator can
+        feed it straight to compute_verdict without re-running. The
+        returned (ok, reason) pair is unused by propose now that the
+        rollback loop is gone, but we keep the contract so the
+        validator type stays uniform.
+        """
         rep = strategy_mod.soft_replay(target, **_full_replay_kwargs(candidate_md))
         captures["final_replay_result"] = rep
-        return _check_replay_thresholds(rep)
+        return True, "captured"
 
     return {
         "critic_per_attempt": critic_per_attempt,
-        "replay_per_attempt": replay_per_attempt,
-        "final_critic":       final_critic,
         "final_replay":       final_replay,
     }, captures
 
