@@ -75,9 +75,9 @@ def _atomic_response(action: str, body: str = "edited content " * 20) -> str:
 
 
 def _validators_always_pass():
+    """(critic_per_attempt, final_replay) — both pass unconditionally."""
     return (
         lambda cand, cur, ev: (True, ""),
-        lambda cand, cur, _ev: (True, ""),
         lambda cand, target, convs: (True, ""),
     )
 
@@ -89,7 +89,7 @@ class TestHappyPath:
         target = _target(1)
         fake_llm.push(_atomic_response("edit", body="v1 " * 100))
 
-        crit_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
@@ -109,7 +109,7 @@ class TestHappyPath:
         for i in range(3):
             fake_llm.push(_atomic_response("edit", body=f"after-ev{i} " * 50))
 
-        crit_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
@@ -225,7 +225,7 @@ class TestLLMSignals:
         fake_llm.push(_atomic_response("edit", body="x " * 100))
         fake_llm.push(_atomic_response("done"))
 
-        crit_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
@@ -248,7 +248,7 @@ class TestLLMSignals:
         fake_llm.push(_atomic_response("skip"))                    # ev0
         fake_llm.push(_atomic_response("edit", body="y " * 100))   # ev1
 
-        crit_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
@@ -318,7 +318,7 @@ class TestEdgeCases:
         fake_llm.push("<action>edit</action><reasoning>r</reasoning><new_skill_md>   </new_skill_md>")
         fake_llm.push(_atomic_response("edit", body="real " * 100))
 
-        crit_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
