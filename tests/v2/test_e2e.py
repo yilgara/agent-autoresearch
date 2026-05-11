@@ -23,9 +23,9 @@ For find-restaurant which has 2 evidence items:
  6.    final_critic                  (<verdict>APPROVE</verdict>)
  7-10. final_replay (1 fix + 1 baseline)
        7.  fix responder
-       8.  fix judge          (winner=new)
+       8.  fix judge          (new_passes=true)
        9.  baseline responder
-       10. baseline judge     (winner=tie)
+       10. baseline judge     (new_passes=true)
 ```
 
 Total: 10 LLM calls. The orchestrator reuses propose()'s
@@ -106,14 +106,9 @@ _RESPONDER = """\
 <reply>Found Green Leaf — vegan-friendly downtown.</reply>
 """
 
-_JUDGE_NEW = """\
-<winner>new</winner>
-<reasoning>New reply respects the vegan filter; old ignored it.</reasoning>
-"""
-
-_JUDGE_TIE = """\
-<winner>tie</winner>
-<reasoning>Both replies handle the request equivalently.</reasoning>
+_JUDGE_PASS = """\
+<new_passes>true</new_passes>
+<reasoning>The new reply respects the vegan filter and clears the bar.</reasoning>
 """
 
 
@@ -137,9 +132,9 @@ class TestV2EndToEndAccept:
             # final pass inside propose (orchestrator reuses these)
             _CRITIC_APPROVE,                   # 6. final_critic
             _RESPONDER,                        # 7. final_replay fix responder
-            _JUDGE_NEW,                        # 8. final_replay fix judge
+            _JUDGE_PASS,                       # 8. final_replay fix judge
             _RESPONDER,                        # 9. final_replay baseline responder
-            _JUDGE_TIE,                        # 10. final_replay baseline judge
+            _JUDGE_PASS,                       # 10. final_replay baseline judge
         ]
         for r in responses:
             fake_llm.push(r)
@@ -195,5 +190,5 @@ class TestV2EndToEndAccept:
         assert "non-negotiable" in v_new
 
         # 6. v1/v2 replay rates land where expected
-        assert result.verdict.fix_target_score == 1.0   # 1/1 fix new wins
-        assert result.verdict.regression_score == 1.0   # 1/1 baseline tie
+        assert result.verdict.fix_target_score == 1.0   # 1/1 fix new_passes
+        assert result.verdict.regression_score == 1.0   # 1/1 baseline new_passes
