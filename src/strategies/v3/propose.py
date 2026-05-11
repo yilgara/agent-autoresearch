@@ -1,6 +1,6 @@
-"""Step 5 (v2) — atomic-mutation propose loop.
+"""Step 5 (v3) — atomic-mutation propose loop.
 
-Where v1's propose makes ONE big edit per target, v2 builds the new
+Where v1's propose makes ONE big edit per target, v3 builds the new
 SKILL.md incrementally — one atomic change per evidence, validated
 piece-by-piece.
 
@@ -12,7 +12,7 @@ For each `Evidence` on the Target:
         change = propose_atomic(evidence, current_state, accepted_log,
                                  previous_attempts_for_this_evidence)
         candidate = apply(change)
-        if critic(candidate).approves AND replay_one(candidate, evidence).passes:
+        if critic(candidate).approves:
             accept and break to next evidence
         else:
             log the failure, retry
@@ -28,8 +28,8 @@ change at a time and re-validate, until either:
 
 ## Why this is more expensive than v1
 
-Per evidence: up to MAX_ATTEMPTS × (1 propose + 1 critic + 1 mini-replay)
-= up to ~12 LLM calls per evidence in the worst case.
+Per evidence: up to MAX_ATTEMPTS × (1 propose + 1 critic)
+= up to ~6 LLM calls per evidence in the worst case.
 Plus final combined critic + replay.
 Plus rollback re-validation if the final fails.
 
@@ -144,19 +144,17 @@ def propose(
     program_md: str,
     conversations: dict[str, Conversation],
     critic_per_attempt: CriticValidator,
-    replay_per_attempt: ReplayValidator,
     final_critic: CriticValidator,
     final_replay: ReplayValidator,
     llm: LLMProvider | None = None,
 ) -> ProposeResult:
-    """v2 atomic-mutation propose. Iterates over `target.evidence` and
+    """v3 atomic-mutation propose. Iterates over `target.evidence` and
     builds the new SKILL.md one accepted change at a time.
 
-    The four validator hooks let the orchestrator inject the right
+    The three validator hooks let the orchestrator inject the right
     critic/replay implementations without this file having to import
-    them directly. Per-attempt validators run on a single evidence's
-    session; final validators run on the cumulative state with the
-    full sample.
+    them directly. Per-attempt validation is critic-only (cheap gate);
+    the full replay only runs at the final combined check.
     """
     llm = llm or default_llm_provider()
 
@@ -217,15 +215,7 @@ def propose(
                 previous_failed_attempts.append(attempt)
                 continue
 
-            session_id = (evidence.details or {}).get("session_id")
-            conv = conversations.get(session_id) if session_id else None
-            rep_ok, rep_reason = replay_per_attempt(candidate, evidence, conv)
-            if not rep_ok:
-                attempt.failure_reason = f"Replay rejected: {rep_reason}"
-                previous_failed_attempts.append(attempt)
-                continue
-
-            # Both gates passed — accept and move to next evidence
+            # Critic gate passed — accept and move to next evidence
             attempt.accepted = True
             accepted_log.append(attempt)
             state = candidate

@@ -193,9 +193,9 @@ def run_target(
             baseline_sample=baseline_sample,
             llm=llm,
         )
-        # v2 dropped the per-attempt mini-replay gate; only critic gates
-        # each atomic attempt. v3 still uses replay_per_attempt.
-        if version == "v2":
+        # v2 + v3 dropped the per-attempt mini-replay gate; only critic
+        # gates each atomic attempt now.
+        if version in ("v2", "v3"):
             validators = {k: v for k, v in validators.items()
                           if k != "replay_per_attempt"}
         prop = strategy_mod.propose(
@@ -236,13 +236,12 @@ def run_target(
 
     # Step 6+7 — critic + replay for verdict.
     #
-    # v2's propose() already ran final_critic + final_replay on the
-    # cumulative state via the validator captures dict. Reuse those
+    # v2 and v3's propose() already ran final_critic + final_replay on
+    # the cumulative state via the validator captures dict. Reuse those
     # results instead of re-running the same LLM calls. v1 has no
-    # captures; v3 still uses the per-attempt replay path so the
-    # final captured state may not match — re-run for safety.
+    # captures so it still calls critic/soft_replay explicitly.
     reuse_captures = (
-        version == "v2"
+        version in ("v2", "v3")
         and captures.get("final_critic_result") is not None
         and captures.get("final_replay_result") is not None
     )

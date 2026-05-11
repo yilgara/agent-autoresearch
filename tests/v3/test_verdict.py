@@ -97,21 +97,19 @@ class TestHardRejects:
         )
         assert v.label == "REJECT"
 
-    def test_low_fix_rate_triggers_floor(self):
-        # 1/10 fix wins = 10%, well below 30% floor
+    def test_zero_fix_rate_misses_acceptance_gate(self):
+        # 0/10 fix wins. fix_rate is a strict-`>` gate so 0% fails ACCEPT;
+        # without a hard-reject floor it lands in HUMAN_REVIEW.
         rr = _replay(
-            fix_sessions=(
-                [_session("fix_target", winner="new")]
-                + [_session("fix_target", winner="old") for _ in range(9)]
-            ),
+            fix_sessions=[_session("fix_target", winner="old") for _ in range(10)],
             baseline_sessions=[_session("baseline", winner="tie") for _ in range(10)],
         )
         v = compute_verdict(
             skill_name="x", propose_result=_propose(),
             critic_result=_critic(), replay_result=rr,
         )
-        assert v.label == "REJECT"
-        assert "fix_rate" in v.reason
+        assert v.label == "HUMAN_REVIEW"
+        assert v.fix_rate == 0.0
 
     def test_low_binary_checks_triggers_floor(self):
         # All sessions fail every binary check

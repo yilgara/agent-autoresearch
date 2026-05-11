@@ -14,20 +14,19 @@ Asserts:
 
 ## Call sequence
 
-Same as v2 e2e (19 calls):
+Same as v2 e2e (10 calls — per-attempt replay dropped, orchestrator
+reuses propose's final critic/replay results):
 
 ```
  1. build_program       (v3 — emits rubric + binary checks)
- 2-5.  ev #1 atomic loop
- 6-9.  ev #2 atomic loop
-10.    final_critic
-11-14. final_replay  (1 fix + 1 baseline)
-15.    canonical critic
-16-19. canonical soft_replay
+ 2-3.  ev #1 atomic loop  (propose + critic)
+ 4-5.  ev #2 atomic loop
+ 6.    final_critic
+ 7-10. final_replay     (1 fix + 1 baseline; responder + judge each)
 ```
 
-The judge calls (rounds 5/9/12/14/17/19) all use v3's 3-signal output
-schema; everything else is identical to v2.
+The judge calls (rounds 8 and 10) use v3's 3-signal output schema;
+everything else is identical to v2.
 """
 
 from __future__ import annotations
@@ -172,25 +171,15 @@ class TestV3EndToEndAccept:
             # evidence #1 atomic loop
             _propose_edit("ev1"),              # 2. propose
             _CRITIC_APPROVE,                   # 3. critic_per_attempt
-            _RESPONDER,                        # 4. replay_per_attempt responder
-            _JUDGE_FIX,                        # 5. replay_per_attempt judge
             # evidence #2 atomic loop
-            _propose_edit("ev2"),              # 6.
-            _CRITIC_APPROVE,                   # 7.
-            _RESPONDER,                        # 8.
-            _JUDGE_FIX,                        # 9.
-            # final pass inside propose
-            _CRITIC_APPROVE,                   # 10. final_critic
-            _RESPONDER,                        # 11. final_replay fix responder
-            _JUDGE_FIX,                        # 12. final_replay fix judge
-            _RESPONDER,                        # 13. final_replay baseline responder
-            _JUDGE_BASELINE,                   # 14. final_replay baseline judge
-            # canonical pass after propose returns
-            _CRITIC_APPROVE,                   # 15. canonical critic
-            _RESPONDER,                        # 16. canonical replay fix responder
-            _JUDGE_FIX,                        # 17. canonical replay fix judge
-            _RESPONDER,                        # 18. canonical replay baseline responder
-            _JUDGE_BASELINE,                   # 19. canonical replay baseline judge
+            _propose_edit("ev2"),              # 4.
+            _CRITIC_APPROVE,                   # 5.
+            # final pass inside propose (orchestrator reuses these)
+            _CRITIC_APPROVE,                   # 6. final_critic
+            _RESPONDER,                        # 7. final_replay fix responder
+            _JUDGE_FIX,                        # 8. final_replay fix judge
+            _RESPONDER,                        # 9. final_replay baseline responder
+            _JUDGE_BASELINE,                   # 10. final_replay baseline judge
         ]
         for r in responses:
             fake_llm.push(r)
@@ -239,7 +228,7 @@ class TestV3EndToEndAccept:
         assert prog.has_validation_schema is True
 
         # 5. LLM call count
-        assert len(fake_llm.calls) == 19
+        assert len(fake_llm.calls) == 10
 
         # 6. All artifacts on disk
         target_dir = tmp_path / "test_v3_e2e" / "find-restaurant"

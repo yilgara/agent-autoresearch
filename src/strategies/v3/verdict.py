@@ -38,14 +38,16 @@ from agent_autoresearch.strategies.v3.replay import ReplayResult
 # ── Thresholds — tunable per deployment ─────────────────────────────────────
 
 THRESHOLDS = {
-    # Acceptance gates (all four must hold for ACCEPT)
-    "fix_rate_min":              0.50,
+    # Acceptance gates — all four must hold for ACCEPT.
+    # fix_rate uses a strict `>` (any improvement counts) — one bundled
+    # edit realistically can't hit 50% of fix sessions.
+    "fix_rate_min":              0.0,
     "regression_rate_min":       0.90,
     "rubric_improvement_min":    0.70,
     "binary_checks_min":         0.95,
 
-    # Hard-reject floors
-    "fix_rate_floor":            0.30,
+    # Hard-reject floor — drop the binary_checks_floor to REJECT when
+    # the new prompt breaks too many invariants.
     "binary_checks_floor":       0.80,
 }
 
@@ -147,11 +149,6 @@ def compute_verdict(
             "critic REQUEST_CHANGES: "
             + (", ".join(critic_result.concerns) or critic_result.reasoning)
         )
-    if fix_rate < THRESHOLDS["fix_rate_floor"]:
-        rejects.append(
-            f"fix_rate {fix_rate:.0%} < "
-            f"{THRESHOLDS['fix_rate_floor']:.0%} (floor)"
-        )
     if checks_rate < THRESHOLDS["binary_checks_floor"]:
         rejects.append(
             f"binary_checks_pass_rate {checks_rate:.0%} < "
@@ -165,7 +162,7 @@ def compute_verdict(
     # 4. ACCEPT — all four gates clearly pass
     critic_ok = critic_result is None or critic_result.approves
     gates_ok = (
-        fix_rate    >= THRESHOLDS["fix_rate_min"]
+        fix_rate    >  THRESHOLDS["fix_rate_min"]
         and regr_rate   >= THRESHOLDS["regression_rate_min"]
         and rubric_rate >= THRESHOLDS["rubric_improvement_min"]
         and checks_rate >= THRESHOLDS["binary_checks_min"]
