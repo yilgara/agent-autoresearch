@@ -116,44 +116,44 @@ _RESPONDER = """\
 """
 
 
-def _judge_v3(*, winner: str, new_scores: tuple, old_scores: tuple,
+def _judge_v3(*, new_passes: bool, rubric_winners: tuple,
               all_pass: bool = True) -> str:
     """Build a v3 judge response with all three signals.
 
-    `new_scores` and `old_scores` are 3-tuples of int (one per axis).
+    `rubric_winners` is a 3-tuple of "new"/"old"/"tie" (one per axis).
     `all_pass` controls whether all 5 binary checks pass.
     """
     axis_names = ["dietary_constraint_handling", "query_specificity", "result_grounding"]
     rubric_xml = "\n".join(
-        f"  <axis><name>{name}</name><new>{n}</new><old>{o}</old></axis>"
-        for name, n, o in zip(axis_names, new_scores, old_scores)
+        f"  <axis><name>{name}</name><winner>{w}</winner></axis>"
+        for name, w in zip(axis_names, rubric_winners)
     )
     check_result = "pass" if all_pass else "fail"
     checks_xml = "\n".join(
         f"  <check><id>{i}</id><result>{check_result}</result></check>"
         for i in range(1, 6)
     )
+    np_str = "true" if new_passes else "false"
     return (
-        f"<winner>{winner}</winner>\n"
+        f"<new_passes>{np_str}</new_passes>\n"
         f"<rubric>\n{rubric_xml}\n</rubric>\n"
         f"<checks>\n{checks_xml}\n</checks>\n"
         "<reasoning>Synthesized v3 judge output for tests.</reasoning>"
     )
 
 
-# Fix-session judge: NEW wins, rubric improves, all checks pass
+# Fix-session judge: NEW passes, rubric all-new (positive score), checks pass
 _JUDGE_FIX = _judge_v3(
-    winner="new",
-    new_scores=(3, 3, 2),
-    old_scores=(1, 2, 2),
+    new_passes=True,
+    rubric_winners=("new", "new", "tie"),
     all_pass=True,
 )
 
-# Baseline-session judge: tie, rubric unchanged, all checks pass
+# Baseline-session judge: NEW passes, rubric ties (score 0 — but baselines
+# don't feed rubric), checks pass
 _JUDGE_BASELINE = _judge_v3(
-    winner="tie",
-    new_scores=(2, 2, 2),
-    old_scores=(2, 2, 2),
+    new_passes=True,
+    rubric_winners=("tie", "tie", "tie"),
     all_pass=True,
 )
 
@@ -205,11 +205,11 @@ class TestV3EndToEndAccept:
 
         # 2. All 4 v3 rates landed where expected
         v = result.verdict
-        assert v.fix_rate == 1.0                    # 1/1 fix new wins
-        assert v.regression_rate == 1.0             # 1/1 baseline tie
-        # rubric: fix improved (new>old) + baseline non-regressed (new>=old) = 2/2
-        assert v.rubric_improvement_rate == 1.0
-        assert v.binary_checks_pass_rate == 1.0     # all checks pass on both
+        assert v.fix_rate == 1.0                    # 1/1 fix new_passes
+        assert v.regression_rate == 1.0             # 1/1 baseline new_passes
+        # rubric: 2 new + 1 tie over 1 fix session = (1+1+0)/3 = +2/3 ≈ 0.667
+        assert v.rubric_score == pytest.approx(2 / 3)
+        assert v.binary_checks_pass_rate == 1.0     # all baseline×check pairs pass
 
         # 3. Atomic-mutation bookkeeping
         prop = result.propose_result
@@ -242,5 +242,5 @@ class TestV3EndToEndAccept:
         # in the markdown renderer)
         replay_md = (target_dir / "replay.md").read_text(encoding="utf-8")
         for rate in ("fix_rate", "regression_rate",
-                     "rubric_improvement_rate", "binary_checks_pass_rate"):
+                     "rubric_score", "binary_checks_pass_rate"):
             assert rate in replay_md, f"replay.md missing {rate}"

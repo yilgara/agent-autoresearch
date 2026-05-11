@@ -1,4 +1,4 @@
-"""Tests for v3's judge — winner + rubric + binary-check parser."""
+"""Tests for v3's judge — new_passes + rubric votes + binary-check parser."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import pytest
 from agent_autoresearch.strategies.v3.judge import (
     CheckOutcome,
     JudgeResult,
-    RubricScore,
+    RubricVote,
+    _parse_bool,
     _parse_response,
-    _parse_score_clamped,
 )
 from agent_autoresearch.strategies.v3.program import BinaryCheck, RubricAxis
 
@@ -23,11 +23,11 @@ _CHECKS = [BinaryCheck(id=i, text=f"check {i}") for i in range(1, 6)]
 
 
 _HAPPY_RESPONSE = """
-<winner>new</winner>
+<new_passes>true</new_passes>
 <rubric>
-  <axis><name>clarity</name><new>3</new><old>1</old></axis>
-  <axis><name>safety</name><new>3</new><old>2</old></axis>
-  <axis><name>completeness</name><new>2</new><old>2</old></axis>
+  <axis><name>clarity</name><winner>new</winner></axis>
+  <axis><name>safety</name><winner>new</winner></axis>
+  <axis><name>completeness</name><winner>tie</winner></axis>
 </rubric>
 <checks>
   <check><id>1</id><result>pass</result></check>
@@ -40,37 +40,38 @@ _HAPPY_RESPONSE = """
 """
 
 
-# ── Score clamping ──────────────────────────────────────────────────────────
+# ── new_passes parsing ──────────────────────────────────────────────────────
 
-class TestParseScoreClamped:
-    @pytest.mark.parametrize("raw,expected", [("1", 1), ("2", 2), ("3", 3),
-                                                 (" 3 ", 3)])
-    def test_valid_in_range(self, raw, expected):
-        assert _parse_score_clamped(raw) == expected
+class TestParseBool:
+    @pytest.mark.parametrize("raw", ["true", "True", "TRUE", "yes", "1", "pass", "passes"])
+    def test_truthy(self, raw):
+        assert _parse_bool(raw) is True
 
-    @pytest.mark.parametrize("raw", ["0", "4", "10", "-1", "abc", "", None])
-    def test_out_of_range_clamps_to_2(self, raw):
-        assert _parse_score_clamped(raw) == 2
+    @pytest.mark.parametrize("raw", ["false", "no", "0", "fail", "", None, "garbage"])
+    def test_falsy(self, raw):
+        assert _parse_bool(raw) is False
 
 
 # ── Happy-path parsing ──────────────────────────────────────────────────────
 
 class TestParseResponseHappy:
-    def test_winner_extracted(self):
-        winner, rubric, checks, reasoning = _parse_response(
+    def test_new_passes_extracted(self):
+        new_passes, rubric, checks, reasoning = _parse_response(
             _HAPPY_RESPONSE, expected_axes=_AXES, expected_checks=_CHECKS,
         )
-        assert winner == "new"
+        assert new_passes is True
 
-    def test_rubric_scores_aligned_with_expected_axes(self):
+    def test_rubric_votes_aligned_with_expected_axes(self):
         _, rubric, _, _ = _parse_response(
             _HAPPY_RESPONSE, expected_axes=_AXES, expected_checks=_CHECKS,
         )
         assert len(rubric) == 3
-        by_name = {s.name: s for s in rubric}
-        assert by_name["clarity"].new == 3 and by_name["clarity"].old == 1
-        assert by_name["safety"].new == 3 and by_name["safety"].old == 2
-        assert by_name["completeness"].new == 2 and by_name["completeness"].old == 2
+        by_name = {v.name: v for v in rubric}
+        assert by_name["clarity"].winner == "new"
+        assert by_name["clarity"].score == 1
+        assert by_name["safety"].winner == "new"
+        assert by_name["completeness"].winner == "tie"
+        assert by_name["completeness"].score == 0
 
     def test_check_results_aligned_with_expected_ids(self):
         _, _, checks, _ = _parse_response(
@@ -90,19 +91,19 @@ class TestParseResponseHappy:
 # ── Defensive parsing ───────────────────────────────────────────────────────
 
 class TestDefensiveParsing:
-    def test_missing_winner_defaults_to_old(self):
-        winner, _, _, _ = _parse_response(
+    def test_missing_new_passes_defaults_to_false(self):
+        new_passes, _, _, _ = _parse_response(
             "garbage with no tags",
             expected_axes=_AXES, expected_checks=_CHECKS,
         )
-        assert winner == "old"
+        assert new_passes is False
 
-    def test_missing_axes_default_to_2_2(self):
-        """When the LLM forgets some axes entirely, they default to 2/2."""
+    def test_missing_axes_default_to_tie(self):
+        """When the LLM forgets some axes entirely, they default to tie (score 0)."""
         partial = """
-        <winner>new</winner>
+        <new_passes>true</new_passes>
         <rubric>
-          <axis><name>clarity</name><new>3</new><old>1</old></axis>
+          <axis><name>clarity</name><winner>new</winner></axis>
         </rubric>
         <checks></checks>
         <reasoning>only clarity assessed</reasoning>
@@ -110,16 +111,16 @@ class TestDefensiveParsing:
         _, rubric, _, _ = _parse_response(
             partial, expected_axes=_AXES, expected_checks=_CHECKS,
         )
-        by_name = {s.name: s for s in rubric}
-        assert by_name["clarity"].new == 3 and by_name["clarity"].old == 1
-        # safety and completeness defaulted to 2/2
-        assert by_name["safety"].new == 2 and by_name["safety"].old == 2
-        assert by_name["completeness"].new == 2
+        by_name = {v.name: v for v in rubric}
+        assert by_name["clarity"].winner == "new"
+        assert by_name["safety"].winner == "tie"
+        assert by_name["completeness"].winner == "tie"
+        assert by_name["safety"].score == 0
 
     def test_missing_checks_default_to_fail(self):
         """Missing checks default to fail — regression-safe (don't silently pass)."""
         partial = """
-        <winner>tie</winner>
+        <new_passes>false</new_passes>
         <rubric></rubric>
         <checks>
           <check><id>1</id><result>pass</result></check>
@@ -130,80 +131,42 @@ class TestDefensiveParsing:
             partial, expected_axes=_AXES, expected_checks=_CHECKS,
         )
         assert checks[0].result == "pass"
-        # checks 2-5 defaulted to 'fail'
         assert all(c.result == "fail" for c in checks[1:])
 
-    def test_out_of_range_score_normalized(self):
+    def test_invalid_winner_defaults_to_tie(self):
         partial = """
-        <winner>new</winner>
+        <new_passes>true</new_passes>
         <rubric>
-          <axis><name>clarity</name><new>5</new><old>0</old></axis>
+          <axis><name>clarity</name><winner>maybe</winner></axis>
         </rubric>
         <checks></checks>
-        <reasoning>oh well</reasoning>
+        <reasoning>weird value</reasoning>
         """
         _, rubric, _, _ = _parse_response(
             partial, expected_axes=_AXES, expected_checks=_CHECKS,
         )
-        by_name = {s.name: s for s in rubric}
-        assert by_name["clarity"].new == 2   # clamped from 5
-        assert by_name["clarity"].old == 2   # clamped from 0
+        by_name = {v.name: v for v in rubric}
+        assert by_name["clarity"].winner == "tie"
 
 
-# ── JudgeResult derived properties ──────────────────────────────────────────
+# ── RubricVote score mapping ───────────────────────────────────────────────
 
-class TestJudgeResultDerived:
-    def _build(self, rubric, checks, winner="new") -> JudgeResult:
-        return JudgeResult(
-            session_id="s", focus_turn=1, winner=winner,
-            rubric_scores=rubric, check_results=checks,
-            reasoning="", raw_response="",
-            input_tokens=None, output_tokens=None,
-        )
+class TestRubricVoteScore:
+    def test_new_scores_plus_one(self):
+        assert RubricVote("x", "new").score == 1
 
-    def test_rubric_improved_when_avg_new_greater(self):
-        r = self._build(
-            rubric=[RubricScore("a", 3, 1), RubricScore("b", 2, 2)],
-            checks=[],
-        )
-        # avg new = 2.5, avg old = 1.5
-        assert r.rubric_improved is True
-        assert r.rubric_non_regressed is True
+    def test_tie_scores_zero(self):
+        assert RubricVote("x", "tie").score == 0
 
-    def test_rubric_non_regressed_includes_equal(self):
-        r = self._build(
-            rubric=[RubricScore("a", 2, 2), RubricScore("b", 2, 2)],
-            checks=[],
-        )
-        assert r.rubric_improved is False         # not strictly better
-        assert r.rubric_non_regressed is True     # not worse
+    def test_old_scores_minus_one(self):
+        assert RubricVote("x", "old").score == -1
 
-    def test_rubric_regression_detected(self):
-        r = self._build(
-            rubric=[RubricScore("a", 1, 3)],
-            checks=[],
-        )
-        assert r.rubric_improved is False
-        assert r.rubric_non_regressed is False
 
-    def test_all_checks_pass_handles_na(self):
-        r = self._build(
-            rubric=[],
-            checks=[
-                CheckOutcome(1, "pass"),
-                CheckOutcome(2, "na"),
-                CheckOutcome(3, "pass"),
-            ],
-        )
-        assert r.all_checks_pass is True
+# ── CheckOutcome.is_pass ────────────────────────────────────────────────────
 
-    def test_one_failing_check_fails_all(self):
-        r = self._build(
-            rubric=[],
-            checks=[CheckOutcome(1, "pass"), CheckOutcome(2, "fail")],
-        )
-        assert r.all_checks_pass is False
-
-    def test_empty_checks_passes_trivially(self):
-        r = self._build(rubric=[], checks=[])
-        assert r.all_checks_pass is True
+class TestCheckOutcomeIsPass:
+    @pytest.mark.parametrize("result,expected", [
+        ("pass", True), ("na", True), ("fail", False),
+    ])
+    def test_is_pass(self, result, expected):
+        assert CheckOutcome(1, result).is_pass is expected

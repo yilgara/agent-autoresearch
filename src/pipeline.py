@@ -354,16 +354,18 @@ def _build_atomic_validators(
         """
         thresholds = strategy_mod.THRESHOLDS
         if version == "v3":
+            # fix_rate is informational only; gates are regression,
+            # binary_checks, and rubric_score.
             ok = (
-                rep.fix_rate >= thresholds["fix_rate_min"]
-                and rep.regression_rate >= thresholds["regression_rate_min"]
-                and rep.rubric_improvement_rate >= thresholds["rubric_improvement_min"]
+                rep.regression_rate >= thresholds["regression_rate_min"]
                 and rep.binary_checks_pass_rate >= thresholds["binary_checks_min"]
+                and rep.rubric_score >= thresholds["rubric_score_min"]
             )
             reason = (
-                f"fix={rep.fix_rate:.0%} regr={rep.regression_rate:.0%} "
-                f"rubric={rep.rubric_improvement_rate:.0%} "
-                f"checks={rep.binary_checks_pass_rate:.0%}"
+                f"regr={rep.regression_rate:.0%} "
+                f"checks={rep.binary_checks_pass_rate:.0%} "
+                f"rubric={rep.rubric_score:+.2f} "
+                f"(fix={rep.fix_rate:.0%} info)"
             )
         else:
             # v2: fix_target_min is a strict-> floor (any improvement counts)

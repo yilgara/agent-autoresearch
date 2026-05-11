@@ -1,28 +1,30 @@
-"""Step 8 (v3) — verdict combining critic + 4 replay aggregates.
+"""Step 8 (v3) — verdict combining critic + replay aggregates.
 
 No LLM here. Pure logic that takes:
-  - propose_result   (from v3/v2 atomic-mutation propose)
-  - critic_result    (from v2/v1 critic — unchanged)
-  - replay_result    (from v3 replay — 4 aggregate rates)
+  - propose_result   (from v3 atomic-mutation propose)
+  - critic_result    (from v3 critic — unchanged)
+  - replay_result    (from v3 replay — 4 aggregates with new semantics)
 
 …and emits one of:
 
-  - **ACCEPT**       — all 4 gates pass + critic approves
+  - **ACCEPT**       — all three gates pass + critic approves
   - **HUMAN_REVIEW** — gates ambiguous; needs a human eye
-  - **REJECT**       — at least one hard-reject gate triggered
+  - **REJECT**       — critic rejected the diff
   - **SKIP**         — propose returned skip; nothing to verdict on
 
-## v3 thresholds
+## v3 thresholds (new semantics)
 
-  fix_rate                  >= 50%   on fix sessions       (acceptance)
-  regression_rate           >= 90%   on baselines          (acceptance)
-  rubric_improvement_rate   >= 70%   on all sessions       (acceptance)
-  binary_checks_pass_rate   >= 95%   on all sessions       (acceptance)
+  fix_rate                  — informational only (gate `>= 0` is trivial).
+                              One bundled edit realistically can't pass
+                              a large fraction of fix sessions.
+  regression_rate           >= 90%   on baseline sessions       (acceptance)
+  binary_checks_pass_rate   >= 90%   over baseline session×check pairs
+  rubric_score              >=  0    over fix session×axis pairs
+                              (mean of +1/0/-1 votes — must be net positive)
 
-  fix_rate                  <  30%   on fix sessions       (hard reject)
-  binary_checks_pass_rate   <  80%   on all sessions       (hard reject)
-
-Between acceptance and hard-reject thresholds → HUMAN_REVIEW.
+There are no hard-reject floors on the rate metrics — REJECT is
+reserved for the critic. Anything that fails an acceptance gate but
+the critic approves goes to HUMAN_REVIEW.
 """
 
 from __future__ import annotations
@@ -38,17 +40,12 @@ from agent_autoresearch.strategies.v3.replay import ReplayResult
 # ── Thresholds — tunable per deployment ─────────────────────────────────────
 
 THRESHOLDS = {
-    # Acceptance gates — all four must hold for ACCEPT.
-    # fix_rate uses a strict `>` (any improvement counts) — one bundled
-    # edit realistically can't hit 50% of fix sessions.
-    "fix_rate_min":              0.0,
-    "regression_rate_min":       0.90,
-    "rubric_improvement_min":    0.70,
-    "binary_checks_min":         0.95,
-
-    # Hard-reject floor — drop the binary_checks_floor to REJECT when
-    # the new prompt breaks too many invariants.
-    "binary_checks_floor":       0.80,
+    # fix_rate has no gate; kept here as a documented constant so the
+    # markdown render can show what the floor is (none).
+    "fix_rate_min":           0.0,    # informational only — always passes
+    "regression_rate_min":    0.90,   # over baseline sessions
+    "binary_checks_min":      0.90,   # over baseline × check pairs
+    "rubric_score_min":       0.0,    # mean of +1/0/-1 over fix × axis pairs
 }
 
 
@@ -73,11 +70,11 @@ class Verdict:
     propose_action: str = ""
     critic_verdict: str | None = None
 
-    # v3 — four rates
+    # v3 rates (new semantics)
     fix_rate: float | None = None
     regression_rate: float | None = None
-    rubric_improvement_rate: float | None = None
     binary_checks_pass_rate: float | None = None
+    rubric_score: float | None = None
 
     n_fix_replays: int = 0
     n_baseline_replays: int = 0
@@ -104,7 +101,7 @@ def compute_verdict(
     critic_result: CriticResult | None,
     replay_result: ReplayResult | None,
 ) -> Verdict:
-    """Combine propose + critic + 4 replay rates into one of five labels."""
+    """Combine propose + critic + replay rates into one of four labels."""
 
     # 1. Propose said skip → nothing to verdict
     if propose_result.action == "skip":
@@ -124,11 +121,10 @@ def compute_verdict(
             "edit action. Replay always runs for edits in the pipeline."
         )
 
-    # Pull rates once for readability
     fix_rate = replay_result.fix_rate
     regr_rate = replay_result.regression_rate
-    rubric_rate = replay_result.rubric_improvement_rate
     checks_rate = replay_result.binary_checks_pass_rate
+    rubric_score = replay_result.rubric_score
 
     base_signals = Verdict(
         skill_name=skill_name, label="ACCEPT", reason="",   # placeholder
@@ -136,58 +132,47 @@ def compute_verdict(
         critic_verdict=critic_label,
         fix_rate=fix_rate,
         regression_rate=regr_rate,
-        rubric_improvement_rate=rubric_rate,
         binary_checks_pass_rate=checks_rate,
+        rubric_score=rubric_score,
         n_fix_replays=len(replay_result.fix_target_replays),
         n_baseline_replays=len(replay_result.regression_replays),
     )
 
-    # 3. Hard rejects
-    rejects: list[str] = []
+    # 2. Critic rejection is the only hard reject
     if critic_result and not critic_result.approves:
-        rejects.append(
+        base_signals.label = "REJECT"
+        base_signals.reason = (
             "critic REQUEST_CHANGES: "
             + (", ".join(critic_result.concerns) or critic_result.reasoning)
         )
-    if checks_rate < THRESHOLDS["binary_checks_floor"]:
-        rejects.append(
-            f"binary_checks_pass_rate {checks_rate:.0%} < "
-            f"{THRESHOLDS['binary_checks_floor']:.0%} (floor)"
-        )
-    if rejects:
-        base_signals.label = "REJECT"
-        base_signals.reason = "; ".join(rejects)
         return base_signals
 
-    # 4. ACCEPT — all four gates clearly pass
+    # 3. ACCEPT — all rate gates clearly pass
     critic_ok = critic_result is None or critic_result.approves
     gates_ok = (
-        fix_rate    >  THRESHOLDS["fix_rate_min"]
-        and regr_rate   >= THRESHOLDS["regression_rate_min"]
-        and rubric_rate >= THRESHOLDS["rubric_improvement_min"]
-        and checks_rate >= THRESHOLDS["binary_checks_min"]
+        regr_rate    >= THRESHOLDS["regression_rate_min"]
+        and checks_rate  >= THRESHOLDS["binary_checks_min"]
+        and rubric_score >= THRESHOLDS["rubric_score_min"]
     )
     if critic_ok and gates_ok:
         base_signals.label = "ACCEPT"
         base_signals.reason = (
             f"Critic APPROVE · "
-            f"fix_rate={fix_rate:.0%} · "
             f"regression_rate={regr_rate:.0%} · "
-            f"rubric_improvement_rate={rubric_rate:.0%} · "
-            f"binary_checks_pass_rate={checks_rate:.0%}"
+            f"binary_checks_pass_rate={checks_rate:.0%} · "
+            f"rubric_score={rubric_score:+.2f} · "
+            f"fix_rate={fix_rate:.0%} (informational)"
         )
         return base_signals
 
-    # 5. HUMAN_REVIEW — between hard-reject floors and acceptance gates
+    # 4. HUMAN_REVIEW — at least one acceptance gate failed
     base_signals.label = "HUMAN_REVIEW"
     base_signals.reason = (
         f"Some signal but not all gates passed: "
-        f"fix_rate={fix_rate:.0%} (need ≥{THRESHOLDS['fix_rate_min']:.0%}) · "
         f"regression_rate={regr_rate:.0%} (need ≥{THRESHOLDS['regression_rate_min']:.0%}) · "
-        f"rubric_improvement_rate={rubric_rate:.0%} "
-        f"(need ≥{THRESHOLDS['rubric_improvement_min']:.0%}) · "
         f"binary_checks_pass_rate={checks_rate:.0%} "
-        f"(need ≥{THRESHOLDS['binary_checks_min']:.0%})"
+        f"(need ≥{THRESHOLDS['binary_checks_min']:.0%}) · "
+        f"rubric_score={rubric_score:+.2f} (need ≥{THRESHOLDS['rubric_score_min']:.2f})"
     )
     return base_signals
 
@@ -216,20 +201,22 @@ def _render_verdict_md(v: Verdict) -> str:
         "",
     ]
 
-    def _fmt(rate: float | None, n: int) -> str:
+    def _fmt_rate(rate: float | None, n: int, suffix: str = "") -> str:
         if rate is None:
             return "—"
-        return f"{rate:.0%} (over {n} replays)"
+        return f"{rate:.0%} ({n} sessions{suffix})"
 
     rows = [
-        ("Propose action",            v.propose_action or "—"),
-        ("Critic verdict",            v.critic_verdict or "—"),
-        ("fix_rate",                  _fmt(v.fix_rate, v.n_fix_replays)),
-        ("regression_rate",           _fmt(v.regression_rate, v.n_baseline_replays)),
-        ("rubric_improvement_rate",   _fmt(v.rubric_improvement_rate,
-                                            v.n_fix_replays + v.n_baseline_replays)),
-        ("binary_checks_pass_rate",   _fmt(v.binary_checks_pass_rate,
-                                            v.n_fix_replays + v.n_baseline_replays)),
+        ("Propose action",          v.propose_action or "—"),
+        ("Critic verdict",          v.critic_verdict or "—"),
+        ("fix_rate (info)",         _fmt_rate(v.fix_rate, v.n_fix_replays)),
+        ("regression_rate",         _fmt_rate(v.regression_rate, v.n_baseline_replays)),
+        ("binary_checks_pass_rate",
+            "—" if v.binary_checks_pass_rate is None
+            else f"{v.binary_checks_pass_rate:.0%} (over baseline × check pairs)"),
+        ("rubric_score",
+            "—" if v.rubric_score is None
+            else f"{v.rubric_score:+.2f} (over fix × axis pairs)"),
     ]
     for label, value in rows:
         lines.append(f"- **{label}:** {value}")
@@ -238,20 +225,20 @@ def _render_verdict_md(v: Verdict) -> str:
     lines += ["## Recommendation", ""]
     if v.label == "ACCEPT":
         lines.append(
-            "All four validation gates passed and the critic approved. "
+            "All acceptance gates passed and the critic approved. "
             "Safe to apply to the source repo's `skills/` directory after "
             "a human eye on `diff.txt`. Do NOT auto-merge — confirm manually first."
         )
     elif v.label == "HUMAN_REVIEW":
         lines.append(
-            "Mixed signals — at least one gate is below its acceptance "
-            "threshold but no hard-reject floor was hit. Read `replay.md` "
-            "per-session, weigh the rubric scores and check failures, and "
-            "decide based on whether the regressions are tolerable."
+            "Mixed signals — at least one rate gate is below its acceptance "
+            "threshold but the critic approved. Read `replay.md` per-session, "
+            "weigh the rubric votes and check failures, and decide based on "
+            "whether the regressions are tolerable."
         )
     elif v.label == "REJECT":
         lines.append(
-            "At least one gate triggered hard reject. Do not apply this edit. "
+            "Critic rejected the diff. Do not apply this edit. "
             "Likely next steps: regenerate `program.md` with different framing, "
             "or defer this skill to a future round."
         )

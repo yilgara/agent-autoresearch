@@ -1,26 +1,27 @@
-"""Step 7b (v3) — judge with three signals: winner + rubric + binary checks.
+"""Step 7b (v3) — judge with three signals: new_passes + per-axis rubric + binary checks.
 
 In one LLM call the v3 judge produces:
-  1. `winner` — same `new`/`old`/`tie` as v1/v2 (used for fix_rate
-     and regression_rate).
-  2. `rubric_scores` — for each axis from program.md, an independent
-     1–3 score for OLD and NEW (used for rubric_improvement_rate).
+  1. `new_passes` — bool. Does the new reply (under the proposed skill)
+     adequately handle this session on its own merit? No comparison
+     against old — the old reply already failed (fix sessions) or
+     succeeded (baselines); we just want to know whether new clears
+     the bar for this session.
+  2. `rubric_votes` — for each axis from program.md, judge picks a
+     winner: `new`, `old`, or `tie`. Aggregated downstream over fix
+     sessions into a per-axis +1/0/-1 score (see replay.py).
   3. `check_results` — pass/fail/na for each binary check from
-     program.md (used for binary_checks_pass_rate).
-
-Cost: longer prompt + longer response than v1/v2 (~1.3× per call),
-but same call count per session — no extra LLM round-trips.
+     program.md. Aggregated downstream over baseline sessions.
 
 Defaults on parse failure are conservative:
-  - `winner` → `old`
-  - rubric scores → both 2 ("adequate") on missing axes
-  - checks → `fail` on missing checks (regression-safe default)
+  - `new_passes` → False (don't optimistically count a parse miss as a pass)
+  - rubric votes → `tie` (neutral, 0 score)
+  - checks → `fail` (regression-safe default)
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -32,41 +33,41 @@ from agent_autoresearch.strategies.v3.program import BinaryCheck, RubricAxis
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "judge.md"
 
 
-# Higher cap than v1/v2 — judge response now carries 3 signals
-JUDGE_MAX_TOKENS = 1200
+# Token cap — judge response carries 3 signals; shorter than the old
+# 1-3 rubric since each axis is now a single winner tag.
+JUDGE_MAX_TOKENS = 1000
 
-JudgeWinner = Literal["new", "old", "tie"]
+RubricWinner = Literal["new", "old", "tie"]
 CheckResult = Literal["pass", "fail", "na"]
 
 
 # ── Per-signal data ─────────────────────────────────────────────────────────
 
 @dataclass
-class RubricScore:
-    """One axis's old + new score (1–3 each)."""
+class RubricVote:
+    """One axis's verdict for this session.
+
+    `score` maps the winner to +1/0/-1 so aggregation across
+    (session, axis) pairs reduces to a simple mean.
+    """
     name: str
-    new: int
-    old: int
+    winner: RubricWinner
 
     @property
-    def improved(self) -> bool:
-        return self.new > self.old
-
-    @property
-    def regressed(self) -> bool:
-        return self.new < self.old
+    def score(self) -> int:
+        return {"new": 1, "tie": 0, "old": -1}[self.winner]
 
 
 @dataclass
 class CheckOutcome:
-    """One binary check's pass/fail/na verdict."""
+    """One binary check's pass/fail/na verdict on the new reply."""
     id: int
     result: CheckResult
 
     @property
     def is_pass(self) -> bool:
-        # `na` is treated as pass — the invariant didn't apply at the
-        # focus turn, so the new prompt didn't break it.
+        # `na` counts as pass — the invariant didn't apply at the focus
+        # turn, so the new prompt didn't violate it.
         return self.result in ("pass", "na")
 
 
@@ -75,45 +76,13 @@ class JudgeResult:
     """v3 judge output — three signals from one call."""
     session_id: str
     focus_turn: int
-    winner: JudgeWinner
-    rubric_scores: list[RubricScore]
+    new_passes: bool
+    rubric_votes: list[RubricVote]
     check_results: list[CheckOutcome]
     reasoning: str
     raw_response: str
     input_tokens: int | None
     output_tokens: int | None
-
-    # ── per-session aggregations ────────────────────────────────────────────
-
-    @property
-    def avg_new_score(self) -> float:
-        if not self.rubric_scores:
-            return 0.0
-        return sum(s.new for s in self.rubric_scores) / len(self.rubric_scores)
-
-    @property
-    def avg_old_score(self) -> float:
-        if not self.rubric_scores:
-            return 0.0
-        return sum(s.old for s in self.rubric_scores) / len(self.rubric_scores)
-
-    @property
-    def rubric_improved(self) -> bool:
-        """Used for fix-session contribution to rubric_improvement_rate."""
-        return self.avg_new_score > self.avg_old_score
-
-    @property
-    def rubric_non_regressed(self) -> bool:
-        """Used for baseline-session contribution to rubric_improvement_rate."""
-        return self.avg_new_score >= self.avg_old_score
-
-    @property
-    def all_checks_pass(self) -> bool:
-        """Used for the binary_checks_pass_rate aggregation.
-
-        Empty `check_results` returns True — no checks to fail.
-        """
-        return all(c.is_pass for c in self.check_results)
 
 
 # ── Stage entry point ───────────────────────────────────────────────────────
@@ -132,7 +101,8 @@ def run_judge(
     binary_checks: list[BinaryCheck],
     llm: LLMProvider | None = None,
 ) -> JudgeResult:
-    """Run one judge call. Returns winner + rubric scores + check outcomes."""
+    """Run one judge call. Returns new_passes + per-axis rubric votes +
+    per-check outcomes."""
     llm = llm or default_llm_provider()
 
     system, user = format_prompt(
@@ -150,7 +120,7 @@ def run_judge(
     )
 
     resp = llm.call(system=system, user=user, max_tokens=JUDGE_MAX_TOKENS)
-    winner, rubric, checks, reasoning = _parse_response(
+    new_passes, rubric, checks, reasoning = _parse_response(
         resp.text,
         expected_axes=rubric_axes,
         expected_checks=binary_checks,
@@ -159,8 +129,8 @@ def run_judge(
     return JudgeResult(
         session_id=session_id,
         focus_turn=focus_turn,
-        winner=winner,
-        rubric_scores=rubric,
+        new_passes=new_passes,
+        rubric_votes=rubric,
         check_results=checks,
         reasoning=reasoning,
         raw_response=resp.text,
@@ -173,7 +143,7 @@ def run_judge(
 
 def _format_rubric_block(axes: list[RubricAxis]) -> str:
     if not axes:
-        return "_(no rubric — judge will skip rubric scoring)_"
+        return "_(no rubric — judge will skip rubric voting)_"
     return "\n".join(
         f"- **{a.name}**: {a.description}" for a in axes
     )
@@ -200,39 +170,31 @@ def _parse_response(
     *,
     expected_axes: list[RubricAxis],
     expected_checks: list[BinaryCheck],
-) -> tuple[JudgeWinner, list[RubricScore], list[CheckOutcome], str]:
+) -> tuple[bool, list[RubricVote], list[CheckOutcome], str]:
     """Pull all three signals + reasoning. Defaults are conservative.
 
-    Missing axes → score 2/2 (no improvement either way).
-    Missing checks → result `fail` (regression-safe default).
-    Missing winner → `old`.
+    Missing new_passes → False.
+    Missing axes → vote `tie` (score 0).
+    Missing checks → result `fail`.
     """
-    # Winner
-    winner_raw = (extract_tag(raw, "winner") or "").strip().lower()
-    if winner_raw in ("new", "old", "tie"):
-        winner: JudgeWinner = winner_raw   # type: ignore[assignment]
-    else:
-        winner = "old"
-
+    new_passes = _parse_bool(extract_tag(raw, "new_passes"))
     reasoning = extract_tag(raw, "reasoning") or ""
 
-    # Rubric — pull all <axis>...</axis> blocks, then align with expected axes
+    # Rubric — pull all <axis> blocks, align with expected axes by name
     rubric_section = extract_tag(raw, "rubric") or ""
-    parsed_axes: dict[str, tuple[int, int]] = {}
+    parsed_axes: dict[str, RubricWinner] = {}
     for block in _AXIS_BLOCK_RE.findall(rubric_section):
-        name = (extract_tag(block, "name") or "").strip()
-        if not name:
-            continue
-        new_s = _parse_score_clamped(extract_tag(block, "new"))
-        old_s = _parse_score_clamped(extract_tag(block, "old"))
-        parsed_axes[name.lower()] = (new_s, old_s)
+        name = (extract_tag(block, "name") or "").strip().lower()
+        winner_raw = (extract_tag(block, "winner") or "").strip().lower()
+        if name and winner_raw in ("new", "old", "tie"):
+            parsed_axes[name] = winner_raw   # type: ignore[assignment]
 
-    rubric: list[RubricScore] = []
+    rubric: list[RubricVote] = []
     for ax in expected_axes:
-        n, o = parsed_axes.get(ax.name.lower(), (2, 2))
-        rubric.append(RubricScore(name=ax.name, new=n, old=o))
+        winner = parsed_axes.get(ax.name.lower(), "tie")
+        rubric.append(RubricVote(name=ax.name, winner=winner))
 
-    # Checks — pull all <check>...</check> blocks, align with expected checks by id
+    # Checks — pull all <check> blocks, align with expected checks by id
     checks_section = extract_tag(raw, "checks") or ""
     parsed_checks: dict[int, CheckResult] = {}
     for block in _CHECK_BLOCK_RE.findall(checks_section):
@@ -247,30 +209,21 @@ def _parse_response(
 
     check_outcomes: list[CheckOutcome] = []
     for ch in expected_checks:
-        # Default to fail when the judge didn't return this check —
-        # safer than silently passing.
         check_outcomes.append(CheckOutcome(
             id=ch.id,
             result=parsed_checks.get(ch.id, "fail"),
         ))
 
-    if not reasoning and (not rubric or not check_outcomes):
+    if not reasoning and not parsed_axes and not parsed_checks:
         reasoning = (
             "Parser could only partially extract judge tags; conservative "
             f"defaults applied. Raw response (500 chars): {raw[:500]}"
         )
 
-    return winner, rubric, check_outcomes, reasoning
+    return new_passes, rubric, check_outcomes, reasoning
 
 
-def _parse_score_clamped(raw: str | None) -> int:
-    """Parse a 1–3 score; clamp out-of-range or invalid to 2."""
+def _parse_bool(raw: str | None) -> bool:
     if not raw:
-        return 2
-    try:
-        v = int(raw.strip())
-    except ValueError:
-        return 2
-    if v < 1 or v > 3:
-        return 2
-    return v
+        return False
+    return raw.strip().lower() in ("true", "yes", "1", "pass", "passes")

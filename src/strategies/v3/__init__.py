@@ -33,8 +33,8 @@ from agent_autoresearch.strategies.v3.judge import (
     CheckOutcome,
     CheckResult,
     JudgeResult,
-    JudgeWinner,
-    RubricScore,
+    RubricVote,
+    RubricWinner,
     run_judge,
 )
 from agent_autoresearch.strategies.v3.program import (
@@ -108,11 +108,11 @@ __all__ = [
     "run_responder",
     "ResponderResult",
     "RESPONDER_MAX_TOKENS",
-    # judge (step 7b) — v3 with 3 signals (winner / rubric / checks)
+    # judge (step 7b) — v3 with 3 signals (new_passes / rubric votes / checks)
     "run_judge",
     "JudgeResult",
-    "JudgeWinner",
-    "RubricScore",
+    "RubricVote",
+    "RubricWinner",
     "CheckOutcome",
     "CheckResult",
     "JUDGE_MAX_TOKENS",

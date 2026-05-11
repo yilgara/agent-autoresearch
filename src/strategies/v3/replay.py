@@ -1,30 +1,40 @@
-"""Step 7 (v3) — Soft replay with rubric + binary-check aggregation.
+"""Step 7 (v3) — Soft replay with new_passes + per-axis rubric + checks aggregation.
 
 Same shape as v1/v2: for each session in `target.fix_session_ids +
 regression_baseline_ids`, run the responder (one hypothetical reply
-under the new skill) and the judge (compare old vs new at the focus
+under the new skill) and the judge (3-signal verdict at the focus
 turn).
 
-v3 differences:
-  - The judge call now takes `rubric_axes` + `binary_checks` from
-    program.md and produces three signals per session
-    (winner / per-axis rubric scores / per-check results).
-  - `ReplayResult` exposes 4 aggregate rates instead of 2:
-      * `fix_rate`                 (new wins on fix sessions)
-      * `regression_rate`          (new doesn't lose on baselines)
-      * `rubric_improvement_rate`  (avg new ≥ avg old on a session,
-                                    "improved" on fixes, "non-regressed"
-                                    on baselines)
-      * `binary_checks_pass_rate`  (every check passed on a session;
-                                    `na` is treated as pass)
+v3 metric semantics — each rate is computed over a specific population:
 
-  - `SessionReplay` carries the per-session structured signals so
-    `replay.md` and `verdict.md` can show what actually happened on
-    each session, not just the win/loss.
+  * `fix_rate`                 — over FIX sessions only. Fraction where
+                                  `new_passes == True`. No comparison vs
+                                  old (old already failed). Informational
+                                  for the verdict (no acceptance gate).
 
-`soft_replay()` writes `replay.md` per target via `to_markdown()`,
-unchanged in shape; the new sections (rubric / checks) are appended
-to the per-session blocks.
+  * `regression_rate`          — over BASELINE sessions only. Fraction
+                                  where `new_passes == True`. No
+                                  comparison vs old (old already passed);
+                                  we just need new to also pass.
+                                  Acceptance threshold: ≥ 0.90.
+
+  * `binary_checks_pass_rate`  — over BASELINE sessions × checks.
+                                  Fraction of (session, check) pairs
+                                  where check is `pass` or `na`. The
+                                  new prompt must preserve invariants on
+                                  sessions that already worked.
+                                  Acceptance threshold: ≥ 0.90.
+
+  * `rubric_score`             — over FIX sessions × axes. Mean of
+                                  per-vote scores (+1 if new, 0 if tie,
+                                  -1 if old). Range [-1, +1]. Positive
+                                  means new beat old on average across
+                                  axes on the broken sessions.
+                                  Acceptance threshold: ≥ 0.
+
+`SessionReplay` carries the per-session structured signals so
+`replay.md` and `verdict.md` can show what actually happened on each
+session.
 """
 
 from __future__ import annotations
@@ -45,8 +55,7 @@ from agent_autoresearch.strategies.v3._common import (
 from agent_autoresearch.strategies.v3.judge import (
     CheckOutcome,
     JudgeResult,
-    JudgeWinner,
-    RubricScore,
+    RubricVote,
     run_judge,
 )
 from agent_autoresearch.strategies.v3.program import BinaryCheck, RubricAxis
@@ -77,48 +86,17 @@ class SessionReplay:
     new_tool_plan: str
     new_reply: str
 
-    # v1/v2 winner — kept for fix_rate / regression_rate
-    winner: JudgeWinner
+    # Primary signal — does the new reply adequately handle this session?
+    new_passes: bool = False
 
-    # v3-additive — populated when the judge has rubric/checks
-    rubric_scores: list[RubricScore] = field(default_factory=list)
+    # v3 structured signals
+    rubric_votes: list[RubricVote] = field(default_factory=list)
     check_results: list[CheckOutcome] = field(default_factory=list)
 
     judge_reasoning: str = ""
     responder_tokens: tuple[int | None, int | None] = (None, None)
     judge_tokens: tuple[int | None, int | None] = (None, None)
     error: str | None = None
-
-    # ── per-session derived ────────────────────────────────────────────────
-
-    @property
-    def avg_new_score(self) -> float:
-        if not self.rubric_scores:
-            return 0.0
-        return sum(s.new for s in self.rubric_scores) / len(self.rubric_scores)
-
-    @property
-    def avg_old_score(self) -> float:
-        if not self.rubric_scores:
-            return 0.0
-        return sum(s.old for s in self.rubric_scores) / len(self.rubric_scores)
-
-    @property
-    def rubric_session_ok(self) -> bool:
-        """True when:
-          - on fix sessions: avg new strictly > avg old (improved)
-          - on baselines:    avg new >= avg old      (non-regressed)
-        Sessions with no rubric scores default to True (nothing to fail).
-        """
-        if not self.rubric_scores:
-            return True
-        if self.role == "fix_target":
-            return self.avg_new_score > self.avg_old_score
-        return self.avg_new_score >= self.avg_old_score
-
-    @property
-    def all_checks_pass(self) -> bool:
-        return all(c.is_pass for c in self.check_results)
 
 
 # ── Aggregate result ────────────────────────────────────────────────────────
@@ -127,10 +105,7 @@ class SessionReplay:
 class ReplayResult:
     """v3 replay output — 4 aggregate rates + per-session detail.
 
-    Backward-compat: `fix_target_score` and `regression_score`
-    properties keep their v1/v2 names (mapped to `fix_rate` and
-    `regression_rate`) so v1/v2 verdict logic still reads them if
-    a v3 ReplayResult is fed into v1/v2 verdict by mistake.
+    Rate populations differ per metric — see module docstring.
     """
     skill_name: str
     fix_target_replays: list[SessionReplay] = field(default_factory=list)
@@ -139,41 +114,53 @@ class ReplayResult:
     # ── 4 aggregate rates ──────────────────────────────────────────────────
 
     @property
-    def fix_target_wins(self) -> int:
-        return sum(1 for r in self.fix_target_replays if r.winner == "new")
+    def fix_passes(self) -> int:
+        return sum(1 for r in self.fix_target_replays if r.new_passes)
 
     @property
     def fix_rate(self) -> float:
         n = len(self.fix_target_replays)
-        return (self.fix_target_wins / n) if n else 0.0
+        return (self.fix_passes / n) if n else 0.0
 
     @property
-    def regression_safe(self) -> int:
-        return sum(1 for r in self.regression_replays
-                   if r.winner in ("new", "tie"))
+    def baseline_passes(self) -> int:
+        return sum(1 for r in self.regression_replays if r.new_passes)
 
     @property
     def regression_rate(self) -> float:
         n = len(self.regression_replays)
-        return (self.regression_safe / n) if n else 1.0
-
-    @property
-    def rubric_session_oks(self) -> int:
-        return sum(1 for r in self._all_replays() if r.rubric_session_ok)
-
-    @property
-    def rubric_improvement_rate(self) -> float:
-        n = len(self._all_replays())
-        return (self.rubric_session_oks / n) if n else 1.0
-
-    @property
-    def all_checks_pass_count(self) -> int:
-        return sum(1 for r in self._all_replays() if r.all_checks_pass)
+        return (self.baseline_passes / n) if n else 1.0
 
     @property
     def binary_checks_pass_rate(self) -> float:
-        n = len(self._all_replays())
-        return (self.all_checks_pass_count / n) if n else 1.0
+        """Over (baseline session × check) pairs, fraction passing.
+
+        `na` counts as pass (the invariant didn't apply). Returns 1.0
+        when there are no baseline replays or no checks (nothing to
+        fail).
+        """
+        total = 0
+        passed = 0
+        for r in self.regression_replays:
+            for c in r.check_results:
+                total += 1
+                if c.is_pass:
+                    passed += 1
+        return (passed / total) if total else 1.0
+
+    @property
+    def rubric_score(self) -> float:
+        """Over (fix session × axis) pairs, mean of +1/0/-1 votes.
+
+        Returns 0.0 when there are no fix replays or no axes (neutral).
+        """
+        total = 0
+        score_sum = 0
+        for r in self.fix_target_replays:
+            for v in r.rubric_votes:
+                total += 1
+                score_sum += v.score
+        return (score_sum / total) if total else 0.0
 
     # ── Backward-compat aliases (v1/v2 names) ──────────────────────────────
 
@@ -229,10 +216,10 @@ def _replay_one_session(
 ) -> SessionReplay:
     """Run responder + judge for one session.
 
-    Errors from either LLM call are caught and surfaced via
-    `SessionReplay.error`. Default winner is `old` and rubric/checks
-    are left empty, which downstream aggregations treat as "no
-    improvement / no signal" — safe default.
+    Errors are caught and surfaced via `SessionReplay.error`. On
+    failure, `new_passes=False`, rubric votes default to `tie`, checks
+    default to `fail` — safe defaults that don't optimistically count
+    a broken session as a pass.
     """
     sid = conversation.session_id
     evidence = evidence_for_session(target.evidence, sid)
@@ -256,11 +243,11 @@ def _replay_one_session(
             session_id=sid, role=role, focus_turn=focus_turn,
             user_message=user_message, old_reply=old_reply,
             new_tool_plan="", new_reply="",
-            winner="old",
+            new_passes=False,
             error=f"responder failed: {type(exc).__name__}: {exc}",
         )
 
-    # Step 7b — judge (now produces 3 signals)
+    # Step 7b — judge (3 signals)
     try:
         judg: JudgeResult = run_judge(
             sid,
@@ -280,7 +267,7 @@ def _replay_one_session(
             session_id=sid, role=role, focus_turn=focus_turn,
             user_message=user_message, old_reply=old_reply,
             new_tool_plan=resp.tool_plan, new_reply=resp.reply,
-            winner="old",
+            new_passes=False,
             responder_tokens=(resp.input_tokens, resp.output_tokens),
             error=f"judge failed: {type(exc).__name__}: {exc}",
         )
@@ -291,8 +278,8 @@ def _replay_one_session(
         old_reply=old_reply,
         new_tool_plan=resp.tool_plan,
         new_reply=resp.reply,
-        winner=judg.winner,
-        rubric_scores=judg.rubric_scores,
+        new_passes=judg.new_passes,
+        rubric_votes=judg.rubric_votes,
         check_results=judg.check_results,
         judge_reasoning=judg.reasoning,
         responder_tokens=(resp.input_tokens, resp.output_tokens),
@@ -348,27 +335,29 @@ def soft_replay(
 
 # ── Markdown rendering for replay.md ────────────────────────────────────────
 
-_WINNER_BADGE = {"new": "🟢 new", "old": "🔴 old", "tie": "🟡 tie"}
+def _pass_badge(passed: bool) -> str:
+    return "🟢 new_passes" if passed else "🔴 new fails"
+
+
+def _rubric_badge(winner: str) -> str:
+    return {"new": "🟢 new", "old": "🔴 old", "tie": "🟡 tie"}.get(winner, winner)
 
 
 def _render_replay_md(r: ReplayResult) -> str:
+    n_fix = len(r.fix_target_replays)
+    n_base = len(r.regression_replays)
     lines = [
         f"# Soft-replay results — {r.skill_name}",
         "",
-        f"**fix_rate:**         {r.fix_target_wins}/"
-        f"{len(r.fix_target_replays)}  ({r.fix_rate:.0%}) — "
-        f"new won on this fraction of fix sessions",
-        f"**regression_rate:**  {r.regression_safe}/"
-        f"{len(r.regression_replays)}  ({r.regression_rate:.0%}) — "
-        f"new kept-or-improved on this fraction of baselines",
-        f"**rubric_improvement_rate:** "
-        f"{r.rubric_session_oks}/{len(r._all_replays())} "
-        f"({r.rubric_improvement_rate:.0%}) — "
-        f"per-session rubric average new > old (fixes) or new ≥ old (baselines)",
+        f"**fix_rate:**         {r.fix_passes}/{n_fix}  ({r.fix_rate:.0%}) — "
+        f"new passes on this fraction of fix sessions (informational)",
+        f"**regression_rate:**  {r.baseline_passes}/{n_base}  ({r.regression_rate:.0%}) — "
+        f"new passes on this fraction of baseline sessions",
         f"**binary_checks_pass_rate:** "
-        f"{r.all_checks_pass_count}/{len(r._all_replays())} "
         f"({r.binary_checks_pass_rate:.0%}) — "
-        f"sessions where every binary check passed (or was n/a)",
+        f"fraction of (baseline session × check) pairs passing",
+        f"**rubric_score:** {r.rubric_score:+.2f} — "
+        f"mean of +1/0/-1 votes over (fix session × axis) pairs",
         "",
         f"**Replay tokens:** {r.total_input_tokens:,} in / "
         f"{r.total_output_tokens:,} out",
@@ -382,9 +371,8 @@ def _render_replay_md(r: ReplayResult) -> str:
             out.append("")
             return out
         for s in replays:
-            badge = _WINNER_BADGE.get(s.winner, s.winner)
             out += [
-                f"### `{s.session_id}` (turn {s.focus_turn}) — winner: {badge}",
+                f"### `{s.session_id}` (turn {s.focus_turn}) — {_pass_badge(s.new_passes)}",
                 "",
                 f"**User:** `{truncate(s.user_message, 300)}`",
                 "",
@@ -406,13 +394,11 @@ def _render_replay_md(r: ReplayResult) -> str:
                 "```",
                 "",
             ]
-            if s.rubric_scores:
-                out.append("**Rubric scores (1–3):**")
+            if s.rubric_votes:
+                out.append("**Rubric votes (new/tie/old):**")
                 out.append("")
-                out.append("| axis | new | old |")
-                out.append("|------|----:|----:|")
-                for sc in s.rubric_scores:
-                    out.append(f"| {sc.name} | {sc.new} | {sc.old} |")
+                for v in s.rubric_votes:
+                    out.append(f"- `{v.name}`: {_rubric_badge(v.winner)} ({v.score:+d})")
                 out.append("")
             if s.check_results:
                 out.append("**Binary checks:**")
