@@ -141,7 +141,6 @@ informational fields:
 
 - `accepted_log: list[AtomicAttempt]` — one entry per accepted change
 - `attempts_log: list[AtomicAttempt]` — every attempt, accepted or not
-- `rolled_back_steps: int` — how many recursive-rollback steps fired
 - `combined_check_passed: bool`
 
 These don't affect verdict logic; they're for the markdown trace and

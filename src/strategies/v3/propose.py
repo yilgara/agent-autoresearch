@@ -111,7 +111,6 @@ class ProposeResult:
     # v2-additive
     accepted_log: list[AtomicAttempt] = field(default_factory=list)
     attempts_log: list[AtomicAttempt] = field(default_factory=list)
-    rolled_back_steps: int = 0
     combined_check_passed: bool = False
 
     @property
@@ -242,7 +241,6 @@ def propose(
         output_tokens=total_out or None,
         accepted_log=accepted_log,
         attempts_log=attempts_log,
-        rolled_back_steps=0,
         combined_check_passed=True,
     )
 
@@ -323,7 +321,6 @@ def _build_skip_result(
     attempts_log: list[AtomicAttempt],
     *,
     accepted_log: list[AtomicAttempt] | None = None,
-    rolled_back_steps: int = 0,
     reason: str,
 ) -> ProposeResult:
     return ProposeResult(
@@ -336,7 +333,6 @@ def _build_skip_result(
         output_tokens=total_out or None,
         accepted_log=accepted_log or [],
         attempts_log=attempts_log,
-        rolled_back_steps=rolled_back_steps,
         combined_check_passed=False,
     )
 

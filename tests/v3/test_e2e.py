@@ -215,7 +215,6 @@ class TestV3EndToEndAccept:
         assert prop.action == "edit"
         assert len(prop.accepted_log) == 2
         assert prop.combined_check_passed is True
-        assert prop.rolled_back_steps == 0
 
         # 4. Program parsed rubric + binary checks correctly
         prog = result.program_result

@@ -103,7 +103,6 @@ class TestHappyPath:
         assert result.combined_check_passed is True
         assert len(result.accepted_log) == 1
         assert len(result.attempts_log) == 1
-        assert result.rolled_back_steps == 0
         assert "v1" in (result.new_skill_md or "")
 
     def test_multiple_evidence_each_addressed(self, fake_llm):
@@ -292,7 +291,6 @@ class TestFinalReplay:
         assert len(observed) == 1
         # All accepted changes stay; rollback is gone
         assert result.action == "edit"
-        assert result.rolled_back_steps == 0
         assert len(result.accepted_log) == 3
 
 
