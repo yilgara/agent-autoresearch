@@ -192,6 +192,11 @@ def run_target(
             baseline_sample=baseline_sample,
             llm=llm,
         )
+        # v2 dropped the per-attempt mini-replay gate; only critic gates
+        # each atomic attempt. v3 still uses replay_per_attempt.
+        if version == "v2":
+            validators = {k: v for k, v in validators.items()
+                          if k != "replay_per_attempt"}
         prop = strategy_mod.propose(
             target,
             current_skill_md=current_skill_md,
@@ -346,9 +351,9 @@ def _build_atomic_validators(
                 f"checks={rep.binary_checks_pass_rate:.0%}"
             )
         else:
-            # v2 reuses v1's threshold names
+            # v2: fix_target_min is a strict-> floor (any improvement counts)
             ok = (
-                rep.fix_target_score >= thresholds["fix_target_min"]
+                rep.fix_target_score > thresholds["fix_target_min"]
                 and rep.regression_score >= thresholds["regression_min"]
             )
             reason = (

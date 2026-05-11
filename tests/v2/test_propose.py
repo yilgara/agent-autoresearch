@@ -77,7 +77,6 @@ def _atomic_response(action: str, body: str = "edited content " * 20) -> str:
 def _validators_always_pass():
     return (
         lambda cand, cur, ev: (True, ""),
-        lambda cand, ev, conv: (True, ""),
         lambda cand, cur, _ev: (True, ""),
         lambda cand, target, convs: (True, ""),
     )
@@ -90,14 +89,13 @@ class TestHappyPath:
         target = _target(1)
         fake_llm.push(_atomic_response("edit", body="v1 " * 100))
 
-        crit_per, rep_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, crit_final, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            replay_per_attempt=rep_per,
             final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
@@ -114,14 +112,13 @@ class TestHappyPath:
         for i in range(3):
             fake_llm.push(_atomic_response("edit", body=f"after-ev{i} " * 50))
 
-        crit_per, rep_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, crit_final, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(3),
             critic_per_attempt=crit_per,
-            replay_per_attempt=rep_per,
             final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
@@ -156,7 +153,6 @@ class TestRetryLogic:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
@@ -185,7 +181,6 @@ class TestRetryLogic:
             program_md="# strat",
             conversations=_conversations(2),
             critic_per_attempt=crit_per,
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
@@ -196,18 +191,19 @@ class TestRetryLogic:
         # 3 attempts on ev0 + 1 on ev1 = 4 attempts logged
         assert len(result.attempts_log) == 4
 
-    def test_replay_failure_logs_reason_for_next_attempt(self, fake_llm):
+    def test_critic_failure_logs_reason_for_next_attempt(self, fake_llm):
         """The retry prompt should include why the previous attempt failed.
         We can't observe the prompt directly, but we can verify the
-        AtomicAttempt's failure_reason is set so the next call sees it."""
+        AtomicAttempt's failure_reason carries the critic's rejection text
+        so the next call sees it."""
         target = _target(1)
         for _ in range(2):
             fake_llm.push(_atomic_response("edit", body="x " * 100))
 
-        replay_calls = {"n": 0}
-        def rep_per(cand, ev, conv):
-            replay_calls["n"] += 1
-            if replay_calls["n"] == 1:
+        critic_calls = {"n": 0}
+        def crit_per(cand, cur, ev):
+            critic_calls["n"] += 1
+            if critic_calls["n"] == 1:
                 return (False, "new still ignores vegan")
             return (True, "")
 
@@ -216,8 +212,7 @@ class TestRetryLogic:
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(1),
-            critic_per_attempt=lambda *a, **kw: (True, ""),
-            replay_per_attempt=rep_per,
+            critic_per_attempt=crit_per,
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
@@ -237,14 +232,13 @@ class TestLLMSignals:
         fake_llm.push(_atomic_response("edit", body="x " * 100))
         fake_llm.push(_atomic_response("done"))
 
-        crit_per, rep_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, crit_final, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(5),
             critic_per_attempt=crit_per,
-            replay_per_attempt=rep_per,
             final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
@@ -262,14 +256,13 @@ class TestLLMSignals:
         fake_llm.push(_atomic_response("skip"))                    # ev0
         fake_llm.push(_atomic_response("edit", body="y " * 100))   # ev1
 
-        crit_per, rep_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, crit_final, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(2),
             critic_per_attempt=crit_per,
-            replay_per_attempt=rep_per,
             final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
@@ -302,7 +295,6 @@ class TestRollback:
             program_md="# strat",
             conversations=_conversations(3),
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=final_replay,
             llm=fake_llm,
@@ -331,7 +323,6 @@ class TestRollback:
             program_md="# strat",
             conversations=_conversations(3),
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=final_replay,
             llm=fake_llm,
@@ -354,7 +345,6 @@ class TestRollback:
             program_md="# strat",
             conversations=_conversations(2),
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (False, "always bad"),
             llm=fake_llm,
@@ -377,7 +367,6 @@ class TestEdgeCases:
             program_md="# strat",
             conversations={},
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
@@ -392,14 +381,13 @@ class TestEdgeCases:
         fake_llm.push("<action>edit</action><reasoning>r</reasoning><new_skill_md>   </new_skill_md>")
         fake_llm.push(_atomic_response("edit", body="real " * 100))
 
-        crit_per, rep_per, crit_final, rep_final = _validators_always_pass()
+        crit_per, crit_final, rep_final = _validators_always_pass()
         result = propose(
             target,
             current_skill_md="# original",
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            replay_per_attempt=rep_per,
             final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
@@ -421,7 +409,6 @@ class TestEdgeCases:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=lambda *a, **kw: (False, "nope"),
-            replay_per_attempt=lambda *a, **kw: (True, ""),
             final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
