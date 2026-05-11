@@ -1,7 +1,10 @@
 """Tests for `compute_verdict` — pure logic, easy to enumerate.
 
 Covers all 4 labels (ACCEPT / HUMAN_REVIEW / REJECT / SKIP) plus
-threshold edges that decide between ACCEPT and HUMAN_REVIEW.
+threshold edges. New semantics:
+
+  - fix_target_score : strict `>` 0 (any improvement counts)
+  - regression_score : >= 0.90 hard floor
 """
 
 from __future__ import annotations
@@ -34,24 +37,23 @@ def _critic(approves: bool = True) -> CriticResult:
 
 def _replay(*, fix_score: float, regr_score: float,
              n_fix: int = 3, n_baseline: int = 3) -> ReplayResult:
-    """Build a ReplayResult whose properties match the given scores."""
+    """Build a ReplayResult whose pass-rate properties match the
+    requested scores."""
     rr = ReplayResult(skill_name="x")
-    # Fix target replays — `fix_score` of them have winner='new'
-    n_wins = round(fix_score * n_fix)
+    n_fix_passes = round(fix_score * n_fix)
     for i in range(n_fix):
         rr.fix_target_replays.append(SessionReplay(
             session_id=f"s{i}", role="fix_target", focus_turn=1,
             user_message="", old_reply="", new_tool_plan="", new_reply="",
-            winner="new" if i < n_wins else "old", judge_reasoning="",
+            new_passes=(i < n_fix_passes), judge_reasoning="",
             responder_tokens=(None, None), judge_tokens=(None, None),
         ))
-    # Regression replays — `regr_score` of them have winner='new' (the rest 'old' = lost)
-    n_safe = round(regr_score * n_baseline)
+    n_baseline_passes = round(regr_score * n_baseline)
     for i in range(n_baseline):
         rr.regression_replays.append(SessionReplay(
             session_id=f"b{i}", role="baseline", focus_turn=1,
             user_message="", old_reply="", new_tool_plan="", new_reply="",
-            winner="new" if i < n_safe else "old", judge_reasoning="",
+            new_passes=(i < n_baseline_passes), judge_reasoning="",
             responder_tokens=(None, None), judge_tokens=(None, None),
         ))
     return rr
@@ -93,18 +95,8 @@ def test_critic_rejects_with_replay_returns_reject():
     assert "critic REQUEST_CHANGES" in v.reason
 
 
-def test_low_fix_score_returns_reject():
-    """fix_target_score below `fix_reject_below` → hard reject."""
-    threshold = THRESHOLDS["fix_reject_below"]
-    v = compute_verdict(
-        skill_name="x", propose_result=_propose(),
-        critic_result=_critic(approves=True),
-        replay_result=_replay(fix_score=threshold - 0.1, regr_score=1.0),
-    )
-    assert v.label == "REJECT"
-
-
 def test_low_regression_score_returns_reject():
+    """regression_score below `regression_min` is the only hard floor."""
     threshold = THRESHOLDS["regression_min"]
     v = compute_verdict(
         skill_name="x", propose_result=_propose(),
@@ -127,32 +119,29 @@ def test_both_gates_clearly_pass_returns_accept():
     assert v.regression_score == 1.0
 
 
-def test_accept_at_exact_thresholds():
-    # Use 10 replays so we can land *exactly* on 70% / 90% (small denominators
-    # round to fractions like 2/3 ≈ 0.667 that wouldn't equal the threshold).
+def test_single_fix_pass_is_enough_for_accept():
+    """One fix session passing is enough — `> 0` gate, not `>= 70%`."""
     v = compute_verdict(
         skill_name="x", propose_result=_propose(),
         critic_result=_critic(approves=True),
-        replay_result=_replay(
-            fix_score=THRESHOLDS["fix_target_min"],
-            regr_score=THRESHOLDS["regression_min"],
-            n_fix=10, n_baseline=10,
-        ),
+        replay_result=_replay(fix_score=1/10, regr_score=1.0, n_fix=10),
     )
     assert v.label == "ACCEPT"
+    assert v.fix_target_score == 0.1
 
 
 # ── HUMAN_REVIEW ────────────────────────────────────────────────────────────
 
-def test_fix_score_between_thresholds_returns_human_review():
-    """Above the hard-reject threshold but below the auto-accept threshold."""
-    fix_score = (THRESHOLDS["fix_reject_below"] + THRESHOLDS["fix_target_min"]) / 2
+def test_zero_fix_passes_returns_human_review():
+    """No improvement at all on fix sessions → HUMAN_REVIEW (not REJECT,
+    since regression and critic are fine)."""
     v = compute_verdict(
         skill_name="x", propose_result=_propose(),
         critic_result=_critic(approves=True),
-        replay_result=_replay(fix_score=fix_score, regr_score=1.0),
+        replay_result=_replay(fix_score=0.0, regr_score=1.0),
     )
     assert v.label == "HUMAN_REVIEW"
+    assert v.fix_target_score == 0.0
 
 
 # ── Output detail ───────────────────────────────────────────────────────────

@@ -41,7 +41,6 @@ from agent_autoresearch.strategies.v1._common import (
 )
 from agent_autoresearch.strategies.v1.judge import (
     JudgeResult,
-    JudgeWinner,
     run_judge,
 )
 from agent_autoresearch.strategies.v1.responder import (
@@ -70,7 +69,7 @@ class SessionReplay:
     old_reply: str
     new_tool_plan: str
     new_reply: str
-    winner: JudgeWinner
+    new_passes: bool
     judge_reasoning: str
     responder_tokens: tuple[int | None, int | None]   # (input, output)
     judge_tokens: tuple[int | None, int | None]
@@ -81,30 +80,36 @@ class SessionReplay:
 
 @dataclass
 class ReplayResult:
-    """Output of soft_replay() — per-session detail + aggregate scores."""
+    """Output of soft_replay() — per-session detail + aggregate scores.
+
+    Each rate is computed over a specific population:
+      * fix_target_score   — fraction of FIX sessions where new passes
+                             (old already failed; no comparison needed)
+      * regression_score   — fraction of BASELINE sessions where new
+                             passes (old already passed; we just need
+                             new to also pass)
+    """
     skill_name: str
     fix_target_replays: list[SessionReplay] = field(default_factory=list)
     regression_replays: list[SessionReplay] = field(default_factory=list)
 
     @property
-    def fix_target_wins(self) -> int:
-        return sum(1 for r in self.fix_target_replays if r.winner == "new")
+    def fix_target_passes(self) -> int:
+        return sum(1 for r in self.fix_target_replays if r.new_passes)
 
     @property
     def fix_target_score(self) -> float:
         n = len(self.fix_target_replays)
-        return (self.fix_target_wins / n) if n else 0.0
+        return (self.fix_target_passes / n) if n else 0.0
 
     @property
-    def regression_safe(self) -> int:
-        # On baselines, we want new to NOT lose. tie or new = safe.
-        return sum(1 for r in self.regression_replays
-                   if r.winner in ("new", "tie"))
+    def baseline_passes(self) -> int:
+        return sum(1 for r in self.regression_replays if r.new_passes)
 
     @property
     def regression_score(self) -> float:
         n = len(self.regression_replays)
-        return (self.regression_safe / n) if n else 1.0  # no baselines = no risk
+        return (self.baseline_passes / n) if n else 1.0  # no baselines = no risk
 
     @property
     def total_input_tokens(self) -> int:
@@ -169,7 +174,7 @@ def _replay_one_session(
             session_id=sid, role=role, focus_turn=focus_turn,
             user_message=user_message, old_reply=old_reply,
             new_tool_plan="", new_reply="",
-            winner="old", judge_reasoning="",
+            new_passes=False, judge_reasoning="",
             responder_tokens=(None, None), judge_tokens=(None, None),
             error=f"responder failed: {type(exc).__name__}: {exc}",
         )
@@ -192,7 +197,7 @@ def _replay_one_session(
             session_id=sid, role=role, focus_turn=focus_turn,
             user_message=user_message, old_reply=old_reply,
             new_tool_plan=resp.tool_plan, new_reply=resp.reply,
-            winner="old", judge_reasoning="",
+            new_passes=False, judge_reasoning="",
             responder_tokens=(resp.input_tokens, resp.output_tokens),
             judge_tokens=(None, None),
             error=f"judge failed: {type(exc).__name__}: {exc}",
@@ -204,7 +209,7 @@ def _replay_one_session(
         old_reply=old_reply,
         new_tool_plan=resp.tool_plan,
         new_reply=resp.reply,
-        winner=judg.winner,
+        new_passes=judg.new_passes,
         judge_reasoning=judg.reasoning,
         responder_tokens=(resp.input_tokens, resp.output_tokens),
         judge_tokens=(judg.input_tokens, judg.output_tokens),
@@ -265,20 +270,21 @@ def soft_replay(
 
 # ── Markdown rendering for replay.md ────────────────────────────────────────
 
-_WINNER_BADGE = {"new": "🟢 new", "old": "🔴 old", "tie": "🟡 tie"}
+def _pass_badge(passed: bool) -> str:
+    return "🟢 new_passes" if passed else "🔴 new fails"
 
 
 def _render_replay_md(r: ReplayResult) -> str:
     lines = [
         f"# Soft-replay results — {r.skill_name}",
         "",
-        f"**fix_target_score:** {r.fix_target_wins}/"
+        f"**fix_target_score:** {r.fix_target_passes}/"
         f"{len(r.fix_target_replays)}  ({r.fix_target_score:.0%}) — "
-        f"new skill won this many fix-target replays",
+        f"new passes on this fraction of fix sessions",
         "",
-        f"**regression_score:** {r.regression_safe}/"
+        f"**regression_score:** {r.baseline_passes}/"
         f"{len(r.regression_replays)}  ({r.regression_score:.0%}) — "
-        f"new skill kept-or-improved this many baseline sessions",
+        f"new passes on this fraction of baseline sessions",
         "",
         f"**Replay tokens:** {r.total_input_tokens:,} in / "
         f"{r.total_output_tokens:,} out",
@@ -292,9 +298,8 @@ def _render_replay_md(r: ReplayResult) -> str:
             out.append("")
             return out
         for s in replays:
-            badge = _WINNER_BADGE.get(s.winner, s.winner)
             out += [
-                f"### `{s.session_id}` (turn {s.focus_turn}) — winner: {badge}",
+                f"### `{s.session_id}` (turn {s.focus_turn}) — {_pass_badge(s.new_passes)}",
                 "",
                 f"**User:** `{truncate(s.user_message, 300)}`",
                 "",

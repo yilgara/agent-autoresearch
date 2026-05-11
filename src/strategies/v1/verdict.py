@@ -30,9 +30,12 @@ from agent_autoresearch.strategies.v1.replay import ReplayResult
 # ── Thresholds — tunable per deployment ─────────────────────────────────────
 
 THRESHOLDS = {
-    "fix_target_min":   0.7,    # at least 70% of fix-targets must improve
-    "regression_min":   0.9,    # at least 90% of baselines must hold
-    "fix_reject_below": 0.5,    # below this, it's a hard reject
+    # Strict-`>` gate: any improvement (≥ 1 fix session where new passes)
+    # counts. One bundled edit realistically can't pass a large fraction
+    # of fix sessions, so requiring more than zero passes is the right
+    # bar.
+    "fix_target_min":   0.0,
+    "regression_min":   0.9,    # at least 90% of baselines must still pass
 }
 
 
@@ -103,12 +106,6 @@ def compute_verdict(
             "critic REQUEST_CHANGES: "
             + (", ".join(critic_result.concerns) or critic_result.reasoning)
         )
-    if replay_result.fix_target_score < THRESHOLDS["fix_reject_below"]:
-        rejects.append(
-            f"fix_target_score {replay_result.fix_target_score:.0%} < "
-            f"{THRESHOLDS['fix_reject_below']:.0%} "
-            f"(new skill failed to improve majority of fix-targets)"
-        )
     if replay_result.regression_score < THRESHOLDS["regression_min"]:
         rejects.append(
             f"regression_score {replay_result.regression_score:.0%} < "
@@ -129,7 +126,7 @@ def compute_verdict(
 
     # 4. ACCEPT — both gates clearly pass
     critic_ok = critic_result is None or critic_result.approves
-    fix_ok = replay_result.fix_target_score >= THRESHOLDS["fix_target_min"]
+    fix_ok = replay_result.fix_target_score > THRESHOLDS["fix_target_min"]
     regr_ok = replay_result.regression_score >= THRESHOLDS["regression_min"]
     if critic_ok and fix_ok and regr_ok:
         return Verdict(

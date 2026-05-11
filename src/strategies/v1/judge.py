@@ -1,11 +1,16 @@
-"""Step 7b — judge. Pick winner between old and new agent replies.
+"""Step 7b — judge. Decide whether the NEW reply passes for this session.
 
 Given the session transcript, the original agent reply at the focus
-turn, and the responder's hypothetical reply under the new skill,
-the judge LLM picks `new`, `old`, or `tie` with prose reasoning.
+turn (for context only), and the responder's hypothetical reply under
+the new skill, the judge LLM returns a single boolean: does the new
+reply adequately handle the user's request at the focus turn?
 
-The judge defaults to `old` on ambiguity — burden of proof is on the
-new skill.
+No comparison vs old. On fix sessions old already failed; on baselines
+old already passed — neither tells us anything about whether new
+clears the bar.
+
+The judge defaults to `False` on ambiguity — burden of proof is on
+the new skill.
 
 This is strategy v1's implementation. See `prompts/judge.md` next to
 this file for the prompt template.
@@ -15,7 +20,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from agent_autoresearch._prompts import format_prompt
 from agent_autoresearch.core.llm import LLMProvider, default_llm_provider
@@ -27,15 +31,13 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "judge.md"
 # Token cap — short verdict + reasoning
 JUDGE_MAX_TOKENS = 600
 
-JudgeWinner = Literal["new", "old", "tie"]
-
 
 @dataclass
 class JudgeResult:
-    """Output of run_judge() — which reply wins this comparison."""
+    """Output of run_judge() — does the new reply pass for this session."""
     session_id: str
     focus_turn: int
-    winner: JudgeWinner
+    new_passes: bool
     reasoning: str
     raw_response: str
     input_tokens: int | None
@@ -56,12 +58,13 @@ def run_judge(
     program_md: str,
     llm: LLMProvider | None = None,
 ) -> JudgeResult:
-    """Step 7b — pick winner for the focus turn.
+    """Step 7b — decide whether the new reply passes at the focus turn.
 
-    `old_reply` is the original agent's reply at the focus turn (read
-    from the conversation). `new_reply` and `new_tool_plan` are the
-    responder's output. `program_md` provides context on what the
-    proposed skill change was supposed to achieve.
+    `old_reply` is shown to the judge for context (so it can see what
+    actually happened in the session) but doesn't drive the verdict —
+    judge `new_reply` on its own merit against the user's request.
+    `program_md` describes what the proposed skill change was supposed
+    to achieve.
     """
     llm = llm or default_llm_provider()
 
@@ -77,12 +80,12 @@ def run_judge(
     )
 
     resp = llm.call(system=system, user=user, max_tokens=JUDGE_MAX_TOKENS)
-    winner, reasoning = _parse_response(resp.text)
+    new_passes, reasoning = _parse_response(resp.text)
 
     return JudgeResult(
         session_id=session_id,
         focus_turn=focus_turn,
-        winner=winner,
+        new_passes=new_passes,
         reasoning=reasoning,
         raw_response=resp.text,
         input_tokens=resp.input_tokens,
@@ -92,24 +95,25 @@ def run_judge(
 
 # ── Response parser ─────────────────────────────────────────────────────────
 
-def _parse_response(raw: str) -> tuple[JudgeWinner, str]:
-    """Pull <winner>, <reasoning> from the LLM text.
+def _parse_response(raw: str) -> tuple[bool, str]:
+    """Pull <new_passes>, <reasoning> from the LLM text.
 
-    Defaults to `old` on parse failure — burden of proof is on the
-    new skill so unclear judges shouldn't accidentally count as wins.
+    Defaults to False on parse failure — burden of proof is on the
+    new skill so unclear judges shouldn't accidentally count as a pass.
     """
-    winner_raw = (extract_tag(raw, "winner") or "").strip().lower()
+    new_passes = _parse_bool(extract_tag(raw, "new_passes"))
     reasoning = extract_tag(raw, "reasoning") or ""
 
-    winner: JudgeWinner
-    if winner_raw in ("new", "old", "tie"):
-        winner = winner_raw  # type: ignore[assignment]
-    else:
-        winner = "old"
-        if not reasoning:
-            reasoning = (
-                "Parser could not extract <winner> tag; defaulting to 'old'. "
-                f"Raw response (500 chars): {raw[:500]}"
-            )
+    if reasoning == "" and not new_passes:
+        reasoning = (
+            "Parser could not extract <new_passes> tag; defaulting to False. "
+            f"Raw response (500 chars): {raw[:500]}"
+        )
 
-    return winner, reasoning
+    return new_passes, reasoning
+
+
+def _parse_bool(raw: str | None) -> bool:
+    if not raw:
+        return False
+    return raw.strip().lower() in ("true", "yes", "1", "pass", "passes")

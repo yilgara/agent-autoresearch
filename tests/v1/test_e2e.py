@@ -39,9 +39,9 @@ EXAMPLE_SKILLS = REPO_ROOT / "examples" / "synthetic-skills"
 #   2. propose           → <action>edit</action> + <new_skill_md>...
 #   3. critic            → <verdict>APPROVE</verdict> + <reasoning>
 #   4. responder (fix)   → <tool_plan> + <reply>
-#   5. judge (fix)       → <winner>new</winner>
+#   5. judge (fix)       → <new_passes>true</new_passes>
 #   6. responder (base)  → <tool_plan> + <reply>
-#   7. judge (base)      → <winner>tie</winner>
+#   7. judge (base)      → <new_passes>true</new_passes>
 
 _PROGRAM_MD = """\
 # Strategy: improve find-restaurant
@@ -95,9 +95,9 @@ _RESPONDER_FIX = """\
 <reply>Found Green Leaf — a vegan-friendly spot downtown. Want me to book it?</reply>
 """
 
-_JUDGE_FIX_NEW_WINS = """\
-<winner>new</winner>
-<reasoning>The new reply respects the vegan filter; the old one ignored it.</reasoning>
+_JUDGE_FIX_NEW_PASSES = """\
+<new_passes>true</new_passes>
+<reasoning>The new reply respects the vegan filter and clears the bar.</reasoning>
 """
 
 _RESPONDER_BASELINE = """\
@@ -105,9 +105,9 @@ _RESPONDER_BASELINE = """\
 <reply>Found Green Leaf — vegan-friendly, downtown.</reply>
 """
 
-_JUDGE_BASELINE_TIE = """\
-<winner>tie</winner>
-<reasoning>Both replies handle the user's request equivalently well.</reasoning>
+_JUDGE_BASELINE_PASSES = """\
+<new_passes>true</new_passes>
+<reasoning>The new reply handles the request correctly.</reasoning>
 """
 
 
@@ -126,9 +126,9 @@ class TestEndToEndSynthetic:
             _PROPOSE_RESPONSE,
             _CRITIC_RESPONSE,
             _RESPONDER_FIX,
-            _JUDGE_FIX_NEW_WINS,
+            _JUDGE_FIX_NEW_PASSES,
             _RESPONDER_BASELINE,
-            _JUDGE_BASELINE_TIE,
+            _JUDGE_BASELINE_PASSES,
         ]:
             fake_llm.push(resp)
 
@@ -152,8 +152,8 @@ class TestEndToEndSynthetic:
             f"Expected ACCEPT, got {verdict.label}: {verdict.reason}"
         )
         assert verdict.skill_name == "find-restaurant"
-        assert verdict.fix_target_score == 1.0      # 1/1 win
-        assert verdict.regression_score == 1.0      # tie counts as safe
+        assert verdict.fix_target_score == 1.0      # 1/1 fix new_passes
+        assert verdict.regression_score == 1.0      # 1/1 baseline new_passes
 
         # 2. Aggregated counts
         assert result.n_accept == 1

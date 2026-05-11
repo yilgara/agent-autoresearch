@@ -31,7 +31,6 @@ from agent_autoresearch.strategies.v1.critic import (
 from agent_autoresearch.strategies.v1.judge import (
     JUDGE_MAX_TOKENS,
     JudgeResult,
-    JudgeWinner,
     run_judge,
 )
 from agent_autoresearch.strategies.v1.program import (
@@ -94,7 +93,6 @@ __all__ = [
     # judge (step 7b)
     "run_judge",
     "JudgeResult",
-    "JudgeWinner",
     "JUDGE_MAX_TOKENS",
     # replay orchestrator (step 7)
     "soft_replay",
