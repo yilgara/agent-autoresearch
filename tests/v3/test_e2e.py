@@ -14,18 +14,17 @@ Asserts:
 
 ## Call sequence
 
-Same as v2 e2e (10 calls — per-attempt replay dropped, orchestrator
-reuses propose's final critic/replay results):
+Same as v2 e2e (9 calls — no final critic, orchestrator reuses
+propose's final replay result):
 
 ```
  1. build_program       (v3 — emits rubric + binary checks)
  2-3.  ev #1 atomic loop  (propose + critic)
  4-5.  ev #2 atomic loop
- 6.    final_critic
- 7-10. final_replay     (1 fix + 1 baseline; responder + judge each)
+ 6-9.  final_replay     (1 fix + 1 baseline; responder + judge each)
 ```
 
-The judge calls (rounds 8 and 10) use v3's 3-signal output schema;
+The judge calls (rounds 7 and 9) use v3's 3-signal output schema;
 everything else is identical to v2.
 """
 
@@ -174,12 +173,11 @@ class TestV3EndToEndAccept:
             # evidence #2 atomic loop
             _propose_edit("ev2"),              # 4.
             _CRITIC_APPROVE,                   # 5.
-            # final pass inside propose (orchestrator reuses these)
-            _CRITIC_APPROVE,                   # 6. final_critic
-            _RESPONDER,                        # 7. final_replay fix responder
-            _JUDGE_FIX,                        # 8. final_replay fix judge
-            _RESPONDER,                        # 9. final_replay baseline responder
-            _JUDGE_BASELINE,                   # 10. final_replay baseline judge
+            # final replay (orchestrator reuses these)
+            _RESPONDER,                        # 6. final_replay fix responder
+            _JUDGE_FIX,                        # 7. final_replay fix judge
+            _RESPONDER,                        # 8. final_replay baseline responder
+            _JUDGE_BASELINE,                   # 9. final_replay baseline judge
         ]
         for r in responses:
             fake_llm.push(r)
@@ -228,13 +226,13 @@ class TestV3EndToEndAccept:
         assert prog.has_validation_schema is True
 
         # 5. LLM call count
-        assert len(fake_llm.calls) == 10
+        assert len(fake_llm.calls) == 9
 
-        # 6. All artifacts on disk
+        # 6. All artifacts on disk (no critic.md — v3 doesn't run a final critic)
         target_dir = tmp_path / "test_v3_e2e" / "find-restaurant"
         for name in (
             "program.md", "v_old.md", "v_new.md", "diff.txt",
-            "propose_reasoning.md", "critic.md", "replay.md", "verdict.md",
+            "propose_reasoning.md", "replay.md", "verdict.md",
         ):
             assert (target_dir / name).exists(), f"missing {name}"
 

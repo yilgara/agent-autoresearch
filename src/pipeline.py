@@ -193,11 +193,12 @@ def run_target(
             baseline_sample=baseline_sample,
             llm=llm,
         )
-        # v2 + v3 dropped the per-attempt mini-replay gate; only critic
-        # gates each atomic attempt now.
+        # v2 + v3 dropped:
+        #   - replay_per_attempt: per-attempt gate is critic-only
+        #   - final_critic:       per-attempt critics already validated
         if version in ("v2", "v3"):
             validators = {k: v for k, v in validators.items()
-                          if k != "replay_per_attempt"}
+                          if k not in ("replay_per_attempt", "final_critic")}
         prop = strategy_mod.propose(
             target,
             current_skill_md=current_skill_md,
@@ -236,20 +237,16 @@ def run_target(
 
     # Step 6+7 — critic + replay for verdict.
     #
-    # v2 and v3's propose() already ran final_critic + final_replay on
-    # the cumulative state via the validator captures dict. Reuse those
-    # results instead of re-running the same LLM calls. v1 has no
-    # captures so it still calls critic/soft_replay explicitly.
-    reuse_captures = (
-        version in ("v2", "v3")
-        and captures.get("final_critic_result") is not None
-        and captures.get("final_replay_result") is not None
-    )
-
-    _hook("critic")
-    if reuse_captures:
-        crit = captures["final_critic_result"]
-    else:
+    # v2/v3: no final critic is run at all (each accepted change was
+    # critic-validated per-attempt inside propose). The final replay
+    # was already executed by propose's `final_replay` validator; we
+    # read its ReplayResult from the captures dict.
+    #
+    # v1: no atomic loop and no captures — call critic + soft_replay
+    # explicitly here.
+    crit = None
+    if version == "v1":
+        _hook("critic")
         crit = strategy_mod.critic(
             target.skill_name,
             program_md=prog.program_md,
@@ -258,11 +255,11 @@ def run_target(
             v_new_md=prop.new_skill_md,
             llm=llm,
         )
-    write_artifact(target.skill_name, "critic.md", crit.to_markdown(),
-                   run_id=run_id, outputs_root=outputs_root)
+        write_artifact(target.skill_name, "critic.md", crit.to_markdown(),
+                       run_id=run_id, outputs_root=outputs_root)
 
     _hook("replay")
-    if reuse_captures:
+    if version in ("v2", "v3") and captures.get("final_replay_result") is not None:
         rep: ReplayResult = captures["final_replay_result"]
     else:
         replay_kwargs: dict = dict(

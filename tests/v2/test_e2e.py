@@ -20,15 +20,15 @@ For find-restaurant which has 2 evidence items:
        2. v2 propose         (<action>edit</action> + new SKILL.md)
        3. critic_per_attempt (<verdict>APPROVE</verdict>)
  4-5.  evidence #2 attempt 1: same 2 calls
- 6.    final_critic                  (<verdict>APPROVE</verdict>)
- 7-10. final_replay (1 fix + 1 baseline)
-       7.  fix responder
-       8.  fix judge          (new_passes=true)
-       9.  baseline responder
-       10. baseline judge     (new_passes=true)
+ 6-9.  final_replay (1 fix + 1 baseline)
+       6.  fix responder
+       7.  fix judge          (new_passes=true)
+       8.  baseline responder
+       9.  baseline judge     (new_passes=true)
 ```
 
-Total: 10 LLM calls. The orchestrator reuses propose()'s
+Total: 9 LLM calls. No final_critic (per-attempt critics already
+validated each accepted change). The orchestrator reuses propose()'s
 final_critic + final_replay results — no canonical re-run.
 """
 
@@ -120,7 +120,7 @@ _JUDGE_PASS = """\
 )
 class TestV2EndToEndAccept:
     def test_full_pipeline_produces_accept(self, tmp_path, fake_llm):
-        # ── Queue all 10 canned responses in pipeline order ─────────────
+        # ── Queue all 9 canned responses in pipeline order ──────────────
         responses = [
             _PROGRAM_MD,                       # 1. build_program
             # evidence #1 attempt
@@ -129,12 +129,11 @@ class TestV2EndToEndAccept:
             # evidence #2 attempt
             _propose_edit("ev2"),              # 4.
             _CRITIC_APPROVE,                   # 5.
-            # final pass inside propose (orchestrator reuses these)
-            _CRITIC_APPROVE,                   # 6. final_critic
-            _RESPONDER,                        # 7. final_replay fix responder
-            _JUDGE_PASS,                       # 8. final_replay fix judge
-            _RESPONDER,                        # 9. final_replay baseline responder
-            _JUDGE_PASS,                       # 10. final_replay baseline judge
+            # final replay (orchestrator reuses these)
+            _RESPONDER,                        # 6. final_replay fix responder
+            _JUDGE_PASS,                       # 7. final_replay fix judge
+            _RESPONDER,                        # 8. final_replay baseline responder
+            _JUDGE_PASS,                       # 9. final_replay baseline judge
         ]
         for r in responses:
             fake_llm.push(r)
@@ -167,11 +166,12 @@ class TestV2EndToEndAccept:
         assert prop.rolled_back_steps == 0
 
         # 3. Exactly the expected number of LLM calls
-        assert len(fake_llm.calls) == 10, (
-            f"Expected 10 LLM calls, got {len(fake_llm.calls)}"
+        assert len(fake_llm.calls) == 9, (
+            f"Expected 9 LLM calls, got {len(fake_llm.calls)}"
         )
 
         # 4. All expected artifacts on disk
+        # (no critic.md — v2 doesn't run a final critic anymore)
         target_dir = tmp_path / "test_v2_e2e" / "find-restaurant"
         for name in (
             "program.md",
@@ -179,7 +179,6 @@ class TestV2EndToEndAccept:
             "v_new.md",
             "diff.txt",
             "propose_reasoning.md",
-            "critic.md",
             "replay.md",
             "verdict.md",
         ):

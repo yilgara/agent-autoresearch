@@ -18,20 +18,15 @@ For each `Evidence` on the Target:
             log the failure, retry
 
 Once all evidence has been processed (or the LLM signaled `done`),
-run a **final combined check** — full critic + full replay against
-the cumulative diff (original → final state).
-
-If the combined check fails, **recursively roll back** one accepted
-change at a time and re-validate, until either:
-- a rolled-back state passes → emit it
-- the accepted log empties → emit `skip`
+run **one final replay** on the cumulative state. No final critic —
+each accepted change was already critic-validated per attempt — and
+no rollback — rejected evidence simply doesn't get stacked.
 
 ## Why this is more expensive than v1
 
 Per evidence: up to MAX_ATTEMPTS × (1 propose + 1 critic)
 = up to ~6 LLM calls per evidence in the worst case.
-Plus final combined critic + replay.
-Plus rollback re-validation if the final fails.
+Plus one final replay over the configured sample.
 
 Cost ≈ 4-10× v1, in exchange for per-change attribution and a stronger
 acceptance signal. See README cost section.
@@ -144,17 +139,18 @@ def propose(
     program_md: str,
     conversations: dict[str, Conversation],
     critic_per_attempt: CriticValidator,
-    final_critic: CriticValidator,
     final_replay: ReplayValidator,
     llm: LLMProvider | None = None,
 ) -> ProposeResult:
     """v2 atomic-mutation propose. Iterates over `target.evidence` and
     builds the new SKILL.md one accepted change at a time.
 
-    The three validator hooks let the orchestrator inject the right
-    critic/replay implementations without this file having to import
-    them directly. Per-attempt validation is critic-only (cheap gate);
-    the full replay only runs at the final combined check.
+    Per-attempt validation is critic-only (cheap gate). After the loop
+    finishes, the full replay runs once on the cumulative state — the
+    orchestrator reuses its result so no canonical re-run is needed.
+    There is no final critic call (per-attempt critics already
+    validated each accepted change) and no rollback (a rejected
+    evidence simply isn't added; previously-accepted changes stand).
     """
     llm = llm or default_llm_provider()
 
@@ -221,10 +217,7 @@ def propose(
             state = candidate
             break
 
-    # ── Final combined check + recursive rollback ───────────────────────────
-
-    rolled_back = 0
-    combined_passed = False
+    # ── Final replay (no critic, no rollback) ───────────────────────────────
 
     if not accepted_log:
         # Nothing was accepted — propose result is a clean skip.
@@ -234,48 +227,24 @@ def propose(
             reason="No atomic change passed validation across all evidence.",
         )
 
-    final_state = state
-    final_log = list(accepted_log)
-    while final_log:
-        crit_ok, crit_reason = final_critic(final_state, current_skill_md, None)
-        rep_ok, rep_reason = final_replay(final_state, target, conversations)
-        if crit_ok and rep_ok:
-            combined_passed = True
-            break
-        # Roll back the most recent accepted change and re-validate
-        final_log.pop()
-        if not final_log:
-            break
-        final_state = final_log[-1].new_skill_md or current_skill_md
-        rolled_back += 1
+    # One full-sample replay over the cumulative state. The validator
+    # closure stores the ReplayResult in the orchestrator's captures
+    # dict so verdict can read it without re-running.
+    final_replay(state, target, conversations)
 
-    if not final_log:
-        # Recursive rollback emptied the log — emit skip
-        return _build_skip_result(
-            target.skill_name, last_resp_text, total_in, total_out,
-            attempts_log,
-            accepted_log=accepted_log,   # preserve for trace
-            rolled_back_steps=rolled_back,
-            reason=(
-                "Final combined validation failed; recursive rollback "
-                "emptied the accepted log without finding a passing state."
-            ),
-        )
-
-    # Successful run — accepted_log may have been trimmed by rollback
-    summary = _summarize_run(final_log, rolled_back, combined_passed)
+    summary = _summarize_run(accepted_log)
     return ProposeResult(
         skill_name=target.skill_name,
         action="edit",
-        new_skill_md=final_state,
+        new_skill_md=state,
         reasoning=summary,
         raw_response=last_resp_text,
         input_tokens=total_in or None,
         output_tokens=total_out or None,
-        accepted_log=final_log,
+        accepted_log=accepted_log,
         attempts_log=attempts_log,
-        rolled_back_steps=rolled_back,
-        combined_check_passed=combined_passed,
+        rolled_back_steps=0,
+        combined_check_passed=True,
     )
 
 
@@ -375,19 +344,11 @@ def _build_skip_result(
 
 # ── Summary text for ProposeResult.reasoning ────────────────────────────────
 
-def _summarize_run(
-    accepted_log: list[AtomicAttempt],
-    rolled_back: int,
-    combined_passed: bool,
-) -> str:
-    parts = [
-        f"v2 atomic-mutation: {len(accepted_log)} change(s) accepted",
-    ]
-    if rolled_back:
-        parts.append(f"{rolled_back} rolled back during final validation")
-    if combined_passed:
-        parts.append("combined check passed")
-    return "; ".join(parts) + "."
+def _summarize_run(accepted_log: list[AtomicAttempt]) -> str:
+    return (
+        f"v2 atomic-mutation: {len(accepted_log)} change(s) accepted "
+        "via per-attempt critic gating."
+    )
 
 
 # ── Response parser ─────────────────────────────────────────────────────────

@@ -96,7 +96,6 @@ class TestHappyPath:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
         )
@@ -119,7 +118,6 @@ class TestHappyPath:
             program_md="# strat",
             conversations=_conversations(3),
             critic_per_attempt=crit_per,
-            final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
         )
@@ -153,7 +151,6 @@ class TestRetryLogic:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
         )
@@ -181,7 +178,6 @@ class TestRetryLogic:
             program_md="# strat",
             conversations=_conversations(2),
             critic_per_attempt=crit_per,
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
         )
@@ -213,7 +209,6 @@ class TestRetryLogic:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
         )
@@ -239,7 +234,6 @@ class TestLLMSignals:
             program_md="# strat",
             conversations=_conversations(5),
             critic_per_attempt=crit_per,
-            final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
         )
@@ -263,7 +257,6 @@ class TestLLMSignals:
             program_md="# strat",
             conversations=_conversations(2),
             critic_per_attempt=crit_per,
-            final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
         )
@@ -271,23 +264,20 @@ class TestLLMSignals:
         assert result.accepted_log[0].evidence_index == 1
 
 
-# ── Recursive rollback ──────────────────────────────────────────────────────
+# ── Final replay observed ───────────────────────────────────────────────────
 
-class TestRollback:
-    def test_combined_failure_rolls_back_one_then_passes(self, fake_llm):
-        """3 evidence accepted, final fails, drop the last one, re-validate
-        passes → emit state with 2 changes."""
+class TestFinalReplay:
+    def test_final_replay_runs_once_on_cumulative_state(self, fake_llm):
+        """After all evidence is processed, final_replay fires once on the
+        cumulative state. No rollback regardless of its outcome."""
         target = _target(3)
         for _ in range(3):
             fake_llm.push(_atomic_response("edit", body="step " * 100))
 
-        # Final validation fails on the 3-change state, passes on the 2-change one
-        final_calls = {"n": 0}
+        observed: list[str] = []
         def final_replay(cand, target, convs):
-            final_calls["n"] += 1
-            if final_calls["n"] == 1:
-                return (False, "regression on baseline")
-            return (True, "")
+            observed.append(cand)
+            return (False, "regression on baseline")   # outcome doesn't roll back
 
         result = propose(
             target,
@@ -295,64 +285,15 @@ class TestRollback:
             program_md="# strat",
             conversations=_conversations(3),
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=final_replay,
             llm=fake_llm,
         )
+        # Exactly one final_replay call regardless of pass/fail
+        assert len(observed) == 1
+        # All accepted changes stay; rollback is gone
         assert result.action == "edit"
-        assert result.rolled_back_steps == 1
-        assert len(result.accepted_log) == 2   # 3 accepted, 1 rolled back
-        assert result.combined_check_passed is True
-
-    def test_recursive_rollback_keeps_going_until_pass(self, fake_llm):
-        """Final fails twice in a row; rolling back twice finally passes."""
-        target = _target(3)
-        for _ in range(3):
-            fake_llm.push(_atomic_response("edit", body="step " * 100))
-
-        final_calls = {"n": 0}
-        def final_replay(cand, target, convs):
-            final_calls["n"] += 1
-            # Fail at 3 changes (call 1) and at 2 changes (call 2);
-            # pass at 1 change (call 3)
-            return (final_calls["n"] >= 3, "still bad" if final_calls["n"] < 3 else "")
-
-        result = propose(
-            target,
-            current_skill_md="# original",
-            program_md="# strat",
-            conversations=_conversations(3),
-            critic_per_attempt=lambda *a, **kw: (True, ""),
-            final_critic=lambda *a, **kw: (True, ""),
-            final_replay=final_replay,
-            llm=fake_llm,
-        )
-        assert result.action == "edit"
-        assert result.rolled_back_steps == 2
-        assert len(result.accepted_log) == 1
-        assert result.combined_check_passed is True
-
-    def test_rollback_empties_accepted_log_emits_skip(self, fake_llm):
-        """If even the first accepted change can't pass combined validation,
-        rollback empties → skip."""
-        target = _target(2)
-        for _ in range(2):
-            fake_llm.push(_atomic_response("edit", body="step " * 100))
-
-        result = propose(
-            target,
-            current_skill_md="# original",
-            program_md="# strat",
-            conversations=_conversations(2),
-            critic_per_attempt=lambda *a, **kw: (True, ""),
-            final_critic=lambda *a, **kw: (True, ""),
-            final_replay=lambda *a, **kw: (False, "always bad"),
-            llm=fake_llm,
-        )
-        assert result.action == "skip"
-        # Despite the skip, attempts_log preserves the run for the trace
-        assert len(result.attempts_log) == 2
-        assert "rollback" in result.reasoning.lower()
+        assert result.rolled_back_steps == 0
+        assert len(result.accepted_log) == 3
 
 
 # ── Edge cases ──────────────────────────────────────────────────────────────
@@ -367,7 +308,6 @@ class TestEdgeCases:
             program_md="# strat",
             conversations={},
             critic_per_attempt=lambda *a, **kw: (True, ""),
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
         )
@@ -388,7 +328,6 @@ class TestEdgeCases:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=crit_per,
-            final_critic=crit_final,
             final_replay=rep_final,
             llm=fake_llm,
         )
@@ -409,7 +348,6 @@ class TestEdgeCases:
             program_md="# strat",
             conversations=_conversations(1),
             critic_per_attempt=lambda *a, **kw: (False, "nope"),
-            final_critic=lambda *a, **kw: (True, ""),
             final_replay=lambda *a, **kw: (True, ""),
             llm=fake_llm,
         )
