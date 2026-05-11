@@ -1,13 +1,12 @@
 # Strategy v1 — the original autoresearch loop
 
-The first cut of the propose → validate → verdict loop. One bundled
-edit per round, freeform LLM judgment for both critic and judge, two
-aggregate rates feeding a 5-label verdict.
+The simplest version: one bundled edit per skill, one critic pass on
+the full diff, one soft replay over a small session sample, then a
+deterministic verdict.
 
-This is the simplest of the three versions and the cheapest to run
-(~$0.07 per target with default sample sizes). It's the right
-starting point if you've never run autoresearch on your data before
-— the output is easy to read and the failure modes are obvious.
+This is the right starting point if you've never run autoresearch on
+your data — the output is easy to read and the failure modes are
+obvious.
 
 ## What's in v1
 
@@ -16,27 +15,21 @@ starting point if you've never run autoresearch on your data before
 | `build_program` | 1 | `program.md` — strategy doc |
 | `propose` | 1 | One bundled `v_new.md` (or `<action>skip</action>`) |
 | `critic` | 1 | `<verdict>APPROVE / REQUEST_CHANGES</verdict>` |
-| `responder` (per session) | 1 × N | `<reply>` under the new skill |
-| `judge` (per session) | 1 × N | `<winner>new / old / tie</winner>` |
+| `responder` (per session) | 1 × N | hypothetical reply under the new skill |
+| `judge` (per session) | 1 × N | `<new_passes>true / false</new_passes>` |
 | `compute_verdict` | 0 | One of `ACCEPT / HUMAN_REVIEW / REJECT / SKIP` |
 
-Total per target with 3 fix + 3 baseline replays: **3 + 12 = 15 LLM
-calls** ≈ $0.07 with Sonnet 4.5.
+Total per target with default `fix_sample=3, baseline_sample=3`:
+**3 + 12 = 15 LLM calls** ≈ $0.07 with Sonnet 4.5.
 
 ## Flow
 
-The diagram below shows the pipeline for **one skill** (one `Target`).
-The orchestrator (`run_pipeline → run_target × N`) iterates this once
-per top-N target — that outer loop isn't drawn here.
-
 ```mermaid
 flowchart TB
-    %% ── Inputs ──
     PROG_IN[/"Target<br/><i>evidence + fix + baselines</i>"/]:::io
     SKILL_IN[/"Current SKILL.md"/]:::io
 
-    %% ── Phase B · Propose (3 LLM calls) ──
-    subgraph PHB[" Phase B · Propose — 3 LLM calls "]
+    subgraph PHB[" Propose phase — 3 LLM calls "]
         direction TB
         BP1["<b>build_program</b><br/>1 LLM call<br/>→ program.md"]:::llm
         BP2["<b>propose</b><br/>1 LLM call<br/>→ v_new.md or skip"]:::llm
@@ -46,23 +39,20 @@ flowchart TB
     PROG_IN --> BP1
     SKILL_IN --> BP2
 
-    %% ── Action gate ──
     DEC{{"<b>propose action?</b>"}}:::decision
     BP2 --> DEC
 
-    %% ── Phase C · Replay (2 LLM calls × N sessions) ──
-    subgraph PHC[" Phase C · Soft replay — 2 LLM calls × N sessions "]
+    subgraph PHC[" Soft replay — 2 LLM calls × N sessions "]
         direction LR
         R1["<b>responder</b><br/>reply under v_new.md"]:::llm
-        R2["<b>judge</b><br/>winner: new / old / tie"]:::llm
+        R2["<b>judge</b><br/>new_passes: true / false"]:::llm
         AGG["<b>aggregate</b><br/>fix_target_score<br/>regression_score"]:::nollm
         R1 --> R2 --> AGG
     end
     DEC == "edit" ==> BP3
     DEC == "edit" ==> R1
 
-    %% ── Verdict (deterministic) ──
-    V{{"<b>compute_verdict</b><br/><i>2-axis thresholds</i><br/>fix_target_score ≥ 70%<br/>regression_score ≥ 90%"}}:::verdict
+    V{{"<b>compute_verdict</b><br/><i>2-axis thresholds</i><br/>fix_target_score &gt; 0<br/>regression_score ≥ 90%"}}:::verdict
     DEC -. "skip" .-> V
     BP3 --> V
     AGG --> V
@@ -70,7 +60,6 @@ flowchart TB
     OUT[/"<b>outputs/run/skill/</b><br/>program · v_old · v_new · diff<br/>critic · replay · verdict"/]:::io
     V ==> OUT
 
-    %% ── Styling ──
     classDef nollm fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
     classDef llm fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
     classDef io fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
@@ -80,23 +69,32 @@ flowchart TB
     style PHC fill:#FAFAFA,stroke:#9E9E9E,stroke-dasharray:5 5
 ```
 
+## Metrics
+
+Each metric is computed over a specific population, with a per-session
+boolean from the judge (`new_passes`). There is **no comparison vs the
+old reply** — the judge evaluates the new reply on its own merit.
+
+| Metric | Population | Per-session signal | Aggregate |
+|---|---|---|---|
+| `fix_target_score` | fix sessions (already failed under old) | `new_passes` | fraction of fix sessions where new passes |
+| `regression_score` | baseline sessions (already passed under old) | `new_passes` | fraction of baseline sessions where new passes |
+
 ## Verdict thresholds
 
 ```python
 THRESHOLDS = {
-    "fix_target_min":   0.70,    # ≥ 70% of fix sessions: new wins
-    "regression_min":   0.90,    # ≥ 90% of baselines: new doesn't lose
-    "fix_reject_below": 0.50,    # below this → hard REJECT
+    "fix_target_min":   0.0,   # strict `>` — any improvement counts
+    "regression_min":   0.9,   # ≥ 90% of baselines must still pass
 }
 ```
 
-| | Acceptance | Hard reject |
-|---|---|---|
-| `fix_target_score` | ≥ 0.70 | < 0.50 |
-| `regression_score` | ≥ 0.90 | — |
-| `critic` | APPROVE | REQUEST_CHANGES |
-
-Between `fix_reject_below` and `fix_target_min` → `HUMAN_REVIEW`.
+| Outcome | Conditions |
+|---|---|
+| `ACCEPT` | critic APPROVE AND `fix_target_score > 0` AND `regression_score ≥ 0.9` |
+| `REJECT` | critic REQUEST_CHANGES OR `regression_score < 0.9` |
+| `HUMAN_REVIEW` | critic APPROVE, regression OK, but `fix_target_score == 0` |
+| `SKIP` | propose returned skip |
 
 ## When v1 is the right choice
 
@@ -112,9 +110,10 @@ Between `fix_reject_below` and `fix_target_min` → `HUMAN_REVIEW`.
 
 ## When to graduate
 
-- **Multi-issue skills.** v1 bundles all evidence into one
-  proposed edit. If your skills have 3+ distinct failure modes, the
-  resulting diffs get sprawling and hard to review. → use v2.
-- **Need attribution.** "Did the dietary-filter fix help?" can't be
-  answered in v1 (one edit either passes or fails as a whole). → v3
-  with rubric scoring gives you per-axis signal.
+- **Multi-issue skills.** v1 bundles all evidence into one proposed
+  edit. If your skills have 3+ distinct failure modes, the diffs get
+  sprawling and hard to review. → use v2 for per-evidence atomic
+  changes.
+- **Need invariant signal.** "Did the dietary-filter fix help on its
+  own?" can't be answered in v1 (one edit either passes or fails as a
+  whole). → v3 with per-axis rubric votes + binary checks.

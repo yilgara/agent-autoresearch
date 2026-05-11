@@ -1,106 +1,75 @@
 # Strategy v2 — atomic-mutation propose
 
-v2 keeps everything from v1 — same `build_program`, same `critic`,
-same `judge`, same 2-axis verdict — but rewrites the `propose` stage
-to make **one atomic change at a time**, validate it, then iterate.
+v2 keeps v1's metrics, replay, and verdict logic — but replaces the
+single-shot `propose` with an **atomic-mutation loop**: one change
+per evidence, validated by a per-attempt critic, with the survivors
+stacked into the final state.
 
 The motivation: v1 bundles every evidence item into a single edit.
-When that edit fails, it's hard to tell which part is the problem
-— maybe 3 of the 5 changes are good and 2 are bad, but the whole
-diff gets rejected. v2 fixes this by making each evidence its own
-mutation with its own gates, then assembling the survivors.
+When that edit fails, it's hard to tell which part is the problem —
+maybe 3 of the 5 changes are good and 2 are bad, but the whole diff
+gets rejected. v2 makes each evidence its own atomic mutation with
+its own critic gate, then assembles the survivors.
 
 ## What's new in v2
 
 | Change | Why |
 |---|---|
-| **One atomic edit per `propose` LLM call** | Smaller diffs are easier for critic/judge to evaluate. Each call has a single, scoped purpose. |
+| **One atomic edit per `propose` LLM call** | Smaller diffs are easier for the critic to evaluate. Each call has a single, scoped purpose. |
 | **Per-evidence retry budget** (max 3 attempts) | If the LLM produces a bad edit, the next attempt sees the failure reason and tries a different angle. |
-| **Per-iteration gates** (critic + 1-session replay) | Each accepted change is individually validated before moving on. |
-| **Final combined check + recursive rollback** | After all accepted changes are stacked, run full critic + replay on the whole bundle. If it fails, drop the most recent change and re-validate; repeat until passing or stack empty. |
+| **Per-attempt critic gate** | Each accepted change is critic-validated before being added to the cumulative state. |
 | **`<action>done</action>` early-exit** | The proposer can signal "no more useful edits" mid-loop. |
+| **One final replay over the cumulative state** | Result is captured for verdict — orchestrator does **not** re-run replay. |
+| **No final critic, no rollback** | Per-attempt critics already validated each accepted change. If an evidence's 3 attempts all fail, it's skipped — previously-accepted changes stand. |
 
-Critic, replay, and verdict are unchanged — same prompts, same
-thresholds, same verdict labels. Only `propose.py` and its prompt
-are different.
+Critic prompt, replay prompt, and verdict logic are unchanged from
+v1. Only `propose.py` (and how the orchestrator wires it) is
+different.
 
 ## Flow
 
-The diagram below shows the pipeline for **one skill** (one `Target`).
-The "for each evidence" loop iterates over **that skill's** evidence
-list (`target.evidence`). The outer "for each top-N target" loop
-happens at the orchestrator level (`run_pipeline → run_target × N`)
-and isn't drawn here.
-
 ```mermaid
 flowchart TB
-    %% ── Inputs ──
     PROG[/"<b>program.md</b><br/>strategy doc"/]:::io
     SK[/"Current SKILL.md"/]:::io
     EV[/"target.evidence"/]:::io
 
-    %% ── Initial state ──
-    INIT["<b>state</b> ← SKILL.md<br/><b>accepted_log</b> ← [ ]<br/><b>idx</b> ← 0 (first evidence)<br/><b>attempt</b> ← 1"]:::nollm
+    INIT["<b>state</b> ← SKILL.md<br/><b>accepted_log</b> ← [ ]<br/><b>idx</b> ← 0 · <b>attempt</b> ← 1"]:::nollm
     PROG --> INIT
     SK --> INIT
     EV --> INIT
 
-    %% ── Atomic propose call (one per attempt) ──
     P1["<b>propose_atomic</b><br/>1 LLM call<br/><i>sees: state, evidence[idx],<br/>accepted_log, previous attempts</i>"]:::llm
     INIT --> P1
 
-    %% ── Action gate ──
     ACT{{"<b>action?</b>"}}:::decision
     P1 --> ACT
 
-    %% three branches: edit | skip | done
     ACT -- "edit" --> CR
     ACT -. "skip<br/>(this evidence)" .-> NEXT
-    ACT -. "done<br/>(stop entire loop)" .-> FC
+    ACT -. "done<br/>(stop entire loop)" .-> FR
 
-    %% ── Per-attempt validation (edit path only) ──
     CR["<b>critic_per_attempt</b><br/>1 LLM call · small diff"]:::llm
     CR --> CRDEC{{"approves?"}}:::decision
-    CRDEC == "yes" ==> RP
+    CRDEC == "yes" ==> ACCEPT
     CRDEC == "no" ==> RETRY
 
-    RP["<b>replay_per_attempt</b><br/>2 LLM calls · 1 fix session"]:::llm
-    RP --> RPDEC{{"new wins?"}}:::decision
-    RPDEC == "yes" ==> ACCEPT
-    RPDEC == "no" ==> RETRY
-
-    %% ── Retry budget ──
     RETRY{{"attempt &lt; 3?"}}:::decision
     RETRY == "yes (retry · attempt += 1)" ==> P1
-    RETRY == "no (3 strikes — give up<br/>on this evidence)" ==> NEXT
+    RETRY == "no (3 strikes — skip this evidence)" ==> NEXT
 
-    %% ── Accept this evidence's change, then next ──
     ACCEPT["<b>accept</b><br/>state += change<br/>accepted_log += change"]:::nollm
     ACCEPT --> NEXT
 
-    %% ── Outer loop control ──
     NEXT{{"more<br/>evidence?"}}:::decision
     NEXT == "yes (idx += 1, attempt = 1)" ==> P1
-    NEXT == "no" ==> FC
+    NEXT == "no" ==> FR
 
-    %% ── Final combined validation ──
-    FC["<b>final_critic</b><br/>1 LLM call · cumulative diff<br/>(orig → state)"]:::llm
-    FC --> FR
-    FR["<b>final_replay</b><br/>full fix + baseline sample"]:::llm
-    FR --> OK{{"both<br/>pass?"}}:::decision
+    FR["<b>final_replay</b><br/>full fix + baseline sample<br/><i>result captured for verdict</i>"]:::llm
+    FR --> RESULT["<b>ProposeResult</b><br/>action=edit · accepted_log"]:::nollm
 
-    %% ── Recursive rollback ──
-    OK == "no" ==> POP["<b>pop last accepted</b><br/>state -= last change<br/>accepted_log -= last"]:::nollm
-    POP --> EMPTY{{"accepted_log<br/>empty?"}}:::decision
-    EMPTY == "no (re-validate)" ==> FC
-    EMPTY == "yes" ==> SKIPV{{"<b>SKIP verdict</b><br/>nothing left after rollback"}}:::verdict
+    RESULT --> V{{"<b>compute_verdict</b><br/>fix_target_score &gt; 0<br/>regression_score ≥ 90%"}}:::verdict
 
-    %% ── Success path ──
-    OK == "yes" ==> RESULT["<b>ProposeResult</b><br/>action=edit<br/>+ accepted_log"]:::nollm
-    RESULT --> ORCH["orchestrator<br/>canonical critic + replay"]:::nollm
-    ORCH --> V{{"<b>compute_verdict</b><br/><i>2-axis, same as v1</i>"}}:::verdict
-
-    %% ── Styling ──
     classDef nollm fill:#E8F5E9,stroke:#43A047,stroke-width:2px,color:#1B5E20
     classDef llm fill:#FFF3E0,stroke:#FB8C00,stroke-width:2px,color:#E65100
     classDef io fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
@@ -108,47 +77,65 @@ flowchart TB
     classDef decision fill:#F3E5F5,stroke:#8E24AA,stroke-width:2px,color:#4A148C
 ```
 
-## What "validation per attempt" actually means
+## Metrics & verdict — same as v1
 
-Each iteration's gates wrap the strategy's own real `critic()` and
-`soft_replay()` — same prompts, same parsers — but the **scope is
-narrower**:
+| Metric | Population | Per-session signal | Aggregate | Threshold |
+|---|---|---|---|---|
+| `fix_target_score` | fix sessions | `new_passes` | fraction where new passes | strict `> 0` |
+| `regression_score` | baseline sessions | `new_passes` | fraction where new passes | `≥ 0.90` |
 
-- `critic_per_attempt` runs on the small per-iteration diff (just
-  what changed in *this* atomic step), not the cumulative diff.
-- `replay_per_attempt` runs on **one** fix session — the one tied to
-  the evidence the LLM is addressing (`evidence.details.session_id`),
-  with `fix_sample=1, baseline_sample=0`.
+```python
+THRESHOLDS = {
+    "fix_target_min":   0.0,   # strict `>` — any improvement counts
+    "regression_min":   0.9,
+}
+```
 
-These are cheap gates that catch obvious failures fast. The
-**final pass** is what runs the full critic + full sample replay
-to make the accept decision.
+Verdict labels are identical to v1:
 
-## Cost
+| Outcome | Conditions |
+|---|---|
+| `ACCEPT` | `fix_target_score > 0` AND `regression_score ≥ 0.9` |
+| `REJECT` | `regression_score < 0.9` |
+| `HUMAN_REVIEW` | regression OK but `fix_target_score == 0` |
+| `SKIP` | propose returned skip (no accepted changes) |
 
-| | LLM calls | $ (Sonnet 4.5) |
-|---|---:|---:|
-| v1 baseline | ~15 | ~$0.07 |
-| v2 happy path (5 evidence × 1 attempt avg) | ~32 | ~$0.16 |
-| v2 worst case (8 evidence × 3 retries) | ~80 | ~$0.40 |
+**No critic gate at verdict time.** Per-attempt critics already
+validated each accepted change inside `propose`; the orchestrator
+passes `critic_result=None` to `compute_verdict`. There is no
+`critic.md` artifact for v2.
 
-## Public contract — unchanged
+## LLM call count
 
-`propose()` still returns one `ProposeResult` with the final
-`new_skill_md`. Downstream stages (critic, replay, verdict at the
-orchestrator level) don't change. v2 ProposeResult adds two
-informational fields:
+For E evidence (default), all accepted on first try, `fix_sample=3,
+baseline_sample=3`:
+
+| Stage | Calls |
+|---|---|
+| `build_program` | 1 |
+| Per evidence: `propose_atomic` + `critic_per_attempt` | 2 × E |
+| `final_replay` (responder + judge × 6 sessions) | 12 |
+| **Total** | **2E + 13** |
+
+Worst case adds up to 2 retries per evidence (3 attempts × 2 calls
+each). No final critic, no rollback re-runs.
+
+## Public contract
+
+`propose()` still returns one `ProposeResult` with the cumulative
+`new_skill_md`. v2 adds two informational fields:
 
 - `accepted_log: list[AtomicAttempt]` — one entry per accepted change
 - `attempts_log: list[AtomicAttempt]` — every attempt, accepted or not
 
-These don't affect verdict logic; they're for the markdown trace and
+Neither affects verdict logic; they're for the markdown trace and
 debugging.
 
 ## When v2 is the right choice
 
 - **Skills with multiple distinct failure modes.** v1 bundles them
-  all into one diff; v2 keeps them separable.
+  all into one diff; v2 keeps each evidence's change separable and
+  individually critic-validated.
 - **You care about attribution.** Each accepted change has its own
   reasoning + the evidence it targets, logged in `accepted_log`.
 - **You want recoverable failures.** A bad edit doesn't kill the
@@ -156,8 +143,8 @@ debugging.
 
 ## When to use v3 instead
 
-v2 still uses v1's freeform `<winner>` judge output and 2-axis
-verdict. If you need **graded per-axis signal** ("the new prompt is
-clearly better at dietary handling but slightly worse at result
-grounding") or **invariant assertions** ("the new prompt must never
-refuse a reasonable lookup"), use v3.
+v2 still uses a single `new_passes` boolean per session — same shape
+as v1. If you need **per-axis quality signal** ("the new prompt is
+better at dietary handling but worse at result grounding") or
+**invariant assertions** ("the new prompt must never refuse a
+reasonable lookup"), use v3.
